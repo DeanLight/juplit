@@ -33,6 +33,9 @@ markdown_extensions:
   - pymdownx.snippets:
       base_path: .
 
+watch:
+  - README.md
+
 plugins:
   - search:
       lang: en
