@@ -59,9 +59,9 @@ python_functions = ["test_*"]
 
 juplit finds the nearest `pyproject.toml` by walking up from the current directory, so the CLI works from any subdirectory.
 
-## Separating logic from tests with `testing()`
+## Separating logic from tests with `test()`
 
-Use `testing()` to gate inline test code so it runs interactively in Jupyter and under pytest, but **never on import**:
+Use `test()` to gate inline test code so it runs interactively in Jupyter and under pytest, but **never on import**:
 
 ```python
 from juplit import test
@@ -85,6 +85,25 @@ python_files = ["*.py"]
 ```
 
 No `def test_*` functions required — just `if test():` blocks next to the code they test.
+
+You can also mix standard pytest functions with `if test():` scaffolding blocks.  Because `if test():` runs at module scope during pytest collection, variables it sets up are available to `def test_*` functions:
+
+```python
+from juplit import test
+
+# %%
+def compute(x: int) -> int:
+    return x * 2 + 1
+
+# %%
+if test():
+    inputs   = [1,  3,  -1]
+    expected = [3,  7,  -1]
+
+def test_compute():
+    for x, e in zip(inputs, expected):
+        assert compute(x) == e
+```
 
 ## Paired notebook format
 

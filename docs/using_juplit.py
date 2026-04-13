@@ -82,26 +82,52 @@
 #
 # Import `test` from juplit to gate code that should run interactively and under
 # pytest, but **never on plain import**:
-
-# %%
-from juplit import test
-
-# %%
-def add(a: int, b: int) -> int:
-    return a + b
-
-# %%
-if test():
-    assert add(1, 2) == 3
-    assert add(-1, 1) == 0
-    print("add() tests passed")
-
-# %% [markdown]
+#
+# ```python
+# from juplit import test
+#
+# # %%
+# def add(a: int, b: int) -> int:
+#     return a + b
+#
+# # %%
+# if test():
+#     assert add(1, 2) == 3
+#     assert add(-1, 1) == 0
+#     print("add() tests passed")
+# ```
+#
 # `test()` returns `True` when:
 # - Running as `__main__` (interactive Jupyter cell execution)
 # - `pytest` is active
 #
 # It returns `False` on normal import — so test assertions never run in production.
+#
+# ### Using `def test_*` functions with `test()` scaffolding
+#
+# You can also use standard pytest-style functions.  Use `if test():` blocks to
+# set up shared fixtures at module level — they run during pytest collection,
+# so the variables are in scope when the test functions execute:
+#
+# ```python
+# from juplit import test
+#
+# # %%
+# def compute(x: int) -> int:
+#     return x * 2 + 1
+#
+# # %%
+# if test():
+#     inputs   = [1,  3,  -1]
+#     expected = [3,  7,  -1]
+#
+# def test_compute():
+#     for x, e in zip(inputs, expected):
+#         assert compute(x) == e
+# ```
+#
+# The `if test():` block scaffolds the test data; `test_compute` is a normal
+# pytest-collected function that uses it.
 
 # %% [markdown]
 # ## poe commands

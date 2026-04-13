@@ -1,6 +1,6 @@
 [project]
 name = "juplit"
-version = "0.0.5"
+version = "0.0.6"
 description = "Jupytext percent-format notebook workflow manager"
 readme = "README.md"
 requires-python = ">=3.12"
