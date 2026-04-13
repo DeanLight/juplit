@@ -1,6 +1,6 @@
 [project]
 name = "juplit"
-version = "0.0.3"
+version = "0.0.4"
 description = "Jupytext percent-format notebook workflow manager"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -65,6 +65,7 @@ notebook_src_dirs = ["juplit", "docs"]
 formats = "ipynb,py:percent"
 
 [tool.pytest.ini_options]
+testpaths = ["juplit"]
 python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
