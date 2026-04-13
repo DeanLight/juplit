@@ -1,0 +1,28 @@
+site_name: juplit
+site_description: Literate programming for Python — write in notebooks, commit clean Python, keep AI agents fast.
+repo_url: https://github.com/DeanLight/juplit
+repo_name: DeanLight/juplit
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_source: true
+            show_root_heading: true
+  - mkdocs-jupyter:
+      include: ["**/*.ipynb"]
+      ignore_h1: false
+
+nav:
+  - Home: index.md
+  - API Reference: api.md

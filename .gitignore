@@ -1,0 +1,8 @@
+juplit/**/*.ipynb
+juplit/*.ipynb
+.ipynb_checkpoints/
+dist/
+__pycache__/
+*.egg-info/
+.venv/
+.env

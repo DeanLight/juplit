@@ -1,0 +1,69 @@
+[project]
+name = "juplit"
+version = "0.1.0"
+description = "Jupytext percent-format notebook workflow manager"
+requires-python = ">=3.12"
+dependencies = [
+    "jupytext>=1.16.0",
+    "cyclopts>=2.0.0",
+]
+
+[project.scripts]
+juplit = "juplit.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.uv.build-backend.wheel]
+include = ["juplit/SKILL.md"]
+
+[dependency-groups]
+dev = [
+    "poethepoet>=0.25.0",
+    "pytest>=8.0.0",
+    "ipykernel>=6.0.0",
+    "pre-commit>=3.0.0",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
+    "mkdocs-jupyter>=0.24.0",
+    "mkdocstrings[python]>=0.24.0",
+]
+
+[tool.poe.tasks]
+init         = {cmd = "pre-commit install", help = "Install git hooks"}
+sync         = {script = "juplit._tasks:sync_notebooks", help = "Sync .py<->ipynb for all paired notebooks"}
+nb           = {script = "juplit._tasks:generate_notebooks", help = "Generate .ipynb from .py files (run after cloning)"}
+clean        = {script = "juplit._tasks:clean_notebooks", help = "Sync then delete all .ipynb files"}
+test         = {cmd = "pytest", help = "Run tests"}
+docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
+docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
+docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
+
+[tool.poe.tasks.pypi]
+help = "Build the package and publish to PyPI"
+sequence = [
+    {ref = "_check_env --env_name UV_PUBLISH_TOKEN"},
+    {cmd = "rm -rf dist/*"},
+    {cmd = "uv build"},
+    {cmd = "uv publish"},
+]
+
+[tool.poe.tasks._check_env]
+help = "Assert an env var is set before proceeding"
+script = "juplit._dev:check_env"
+args = [{name = "env_name", positional = true}]
+
+[tool.juplit]
+notebook_src_dir = "juplit"
+
+[tool.jupytext]
+formats = "ipynb,py:percent"
+
+[tool.pytest.ini_options]
+python_files = ["*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
