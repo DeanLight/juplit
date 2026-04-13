@@ -1,6 +1,6 @@
 [project]
 name = "juplit"
-version = "0.0.4"
+version = "0.0.5"
 description = "Jupytext percent-format notebook workflow manager"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,6 +8,10 @@ dependencies = [
     "jupytext>=1.16.0",
     "cyclopts>=2.0.0",
 ]
+
+[project.urls]
+Documentation = "https://deanlight.github.io/juplit/"
+Repository = "https://github.com/DeanLight/juplit"
 
 [project.scripts]
 juplit = "juplit.cli:main"
