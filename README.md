@@ -29,6 +29,8 @@ juplit skill   # print the Claude Code skill file for juplit
 
 ## Project setup (pyproject.toml)
 
+For a new project, use the [cookiecutter template](https://github.com/DeanLight/juplit_template)
+
 ```toml
 [project]
 dependencies = ["juplit>=0.1.0"]
@@ -107,8 +109,7 @@ Generate a skill file for Claude Code so it understands the juplit workflow:
 juplit skill > .claude/skills/juplit-programming.md
 ```
 
-## Publishing (for maintainers)
-
+For a skill on how to migrate nbdev repos to juplit:
 ```bash
-UV_PUBLISH_TOKEN=... poe pypi
+juplit skill_migrate > .claude/skills/juplit-programming-nbdev-migrate.md
 ```

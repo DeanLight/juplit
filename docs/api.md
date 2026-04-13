@@ -2,7 +2,7 @@
 
 ## juplit
 
-::: juplit._tasks
+::: juplit.tasks
     options:
       members:
         - sync_notebooks

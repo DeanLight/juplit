@@ -1,7 +1,7 @@
-"""Notebook sync task functions for juplit.
+"""Core notebook workflow tasks for juplit.
 
-These are the core poe task implementations. They can be called directly as
-poe script targets or invoked via the `juplit` CLI.
+These functions back both the `poe` task targets and the `juplit` CLI commands.
+They can also be imported and called directly from Python.
 """
 
 import hashlib
@@ -21,20 +21,23 @@ def _find_pyproject_toml() -> Path | None:
     return None
 
 
-def _get_src_dir() -> Path:
-    """Read notebook_src_dir from [tool.juplit] in the nearest pyproject.toml."""
+def _get_src_dirs() -> list[Path]:
+    """Read notebook_src_dirs (or legacy notebook_src_dir) from [tool.juplit]."""
     toml_path = _find_pyproject_toml()
+    root = toml_path.parent if toml_path is not None else Path.cwd()
     if toml_path is not None:
         try:
             with open(toml_path, "rb") as f:
                 config = tomllib.load(f)
-            src = config.get("tool", {}).get("juplit", {}).get("notebook_src_dir")
-            if src:
-                # Resolve relative to the pyproject.toml directory
-                return toml_path.parent / src
+            juplit_cfg = config.get("tool", {}).get("juplit", {})
+            dirs = juplit_cfg.get("notebook_src_dirs") or juplit_cfg.get("notebook_src_dir")
+            if dirs:
+                if isinstance(dirs, str):
+                    dirs = [dirs]
+                return [root / d for d in dirs]
         except OSError:
             pass
-    return Path("src")
+    return [root / "src"]
 
 
 def _is_paired_notebook(path: Path) -> bool:
@@ -58,10 +61,11 @@ def _is_paired_notebook(path: Path) -> bool:
 
 
 def _find_py_files() -> list[Path]:
-    src_dir = _get_src_dir()
-    if not src_dir.exists():
-        return []
-    return sorted(src_dir.rglob("*.py"))
+    result = []
+    for src_dir in _get_src_dirs():
+        if src_dir.exists():
+            result.extend(src_dir.rglob("*.py"))
+    return sorted(result)
 
 
 def _find_percent_notebook_py_files() -> list[Path]:
@@ -82,7 +86,9 @@ def _hash_file(path: Path) -> str:
 
 
 def _state_path() -> Path:
-    return _get_src_dir() / ".sync_hashes.json"
+    toml_path = _find_pyproject_toml()
+    root = toml_path.parent if toml_path is not None else Path.cwd()
+    return root / ".sync_hashes.json"
 
 
 def _load_hashes() -> dict[str, str]:
@@ -152,7 +158,15 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
 # ── Public tasks ─────────────────────────────────────────────────────────────
 
 def sync_notebooks() -> None:
-    """Sync .py <-> .ipynb for all paired percent-format notebooks."""
+    """Sync `.py` and `.ipynb` files for all paired percent-format notebooks.
+
+    Walks the configured `notebook_src_dirs` (from `[tool.juplit]` in
+    `pyproject.toml`) and calls `jupytext --sync` on every `.py` file that has
+    a jupytext percent-format header pairing it with an `.ipynb`.
+
+    Prints a summary of updated, unchanged, and skipped files.
+    Raises `SystemExit(1)` if jupytext reports any errors.
+    """
     files = _find_percent_notebook_py_files()
     if not files:
         print("No percent notebook .py files found.")
@@ -174,7 +188,15 @@ def sync_notebooks() -> None:
 
 
 def generate_notebooks() -> None:
-    """Generate .ipynb files from .py percent-format files."""
+    """Generate `.ipynb` files from `.py` percent-format files.
+
+    Calls `jupytext --to notebook` on every paired `.py` file found in the
+    configured `notebook_src_dirs`. Use this after cloning a repo where only
+    the `.py` sources are committed.
+
+    Prints a summary of created/updated, unchanged, and skipped files.
+    Raises `SystemExit(1)` if jupytext reports any errors.
+    """
     files = _find_percent_notebook_py_files()
     if not files:
         print("No percent notebook .py files found.")
@@ -196,12 +218,21 @@ def generate_notebooks() -> None:
 
 
 def clean_notebooks() -> None:
-    """Sync notebooks then delete all .ipynb files."""
+    """Sync then delete all `.ipynb` files from the source directories.
+
+    First calls `sync_notebooks()` to flush any unsaved changes from the
+    `.ipynb` files back into their paired `.py` sources, then removes every
+    `.ipynb` found under `notebook_src_dirs`. Keeps the working directory
+    clean for AI agents and CI environments that only need the `.py` sources.
+
+    Prints a summary of removed files.
+    """
     sync_notebooks()
     removed = []
-    for f in _get_src_dir().rglob("*.ipynb"):
-        removed.append(f.name)
-        f.unlink()
+    for src_dir in _get_src_dirs():
+        for f in src_dir.rglob("*.ipynb"):
+            removed.append(f.name)
+            f.unlink()
     if removed:
         print(_fmt("clean removed", sorted(removed)))
     else:

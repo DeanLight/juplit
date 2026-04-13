@@ -8,10 +8,34 @@ theme:
   features:
     - navigation.sections
     - navigation.top
+    - navigation.expand
+    - navigation.indexes
+    - search.highlight
+    - search.suggest
+    - search.share
     - content.code.copy
+    - content.code.annotate
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - pymdownx.snippets:
+      base_path: .
 
 plugins:
-  - search
+  - search:
+      lang: en
   - mkdocstrings:
       handlers:
         python:
@@ -19,10 +43,15 @@ plugins:
           options:
             show_source: true
             show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
   - mkdocs-jupyter:
       include: ["**/*.ipynb"]
       ignore_h1: false
+      execute: false
 
 nav:
   - Home: index.md
+  - Getting Started: using_juplit.ipynb
+  - Migrating from nbdev: migrate_from_nbdev.md
   - API Reference: api.md

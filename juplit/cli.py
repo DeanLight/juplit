@@ -4,7 +4,7 @@ from importlib.resources import files
 
 import cyclopts
 
-from juplit._tasks import clean_notebooks, generate_notebooks, sync_notebooks
+from juplit.tasks import clean_notebooks, generate_notebooks, sync_notebooks
 
 app = cyclopts.App(
     name="juplit",
@@ -38,8 +38,18 @@ def skill() -> None:
 
         juplit skill > .claude/skills/juplit-programming.md
     """
-    skill_text = files("juplit").joinpath("SKILL.md").read_text()
-    print(skill_text, end="")
+    print(files("juplit").joinpath("SKILL.md").read_text(), end="")
+
+
+@app.command
+def skill_migrate() -> None:
+    """Print the nbdev-to-juplit migration skill file for use with Claude Code.
+
+    Pipe the output into your project's .claude/skills/ directory:
+
+        juplit skill-migrate > .claude/skills/juplit-migrate.md
+    """
+    print(files("juplit").joinpath("SKILL_migrate_from_nbdev.md").read_text(), end="")
 
 
 def main() -> None:

@@ -1,7 +1,8 @@
 [project]
 name = "juplit"
-version = "0.1.0"
+version = "0.0.2"
 description = "Jupytext percent-format notebook workflow manager"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "jupytext>=1.16.0",
@@ -19,7 +20,7 @@ build-backend = "uv_build"
 module-root = ""
 
 [tool.uv.build-backend.wheel]
-include = ["juplit/SKILL.md"]
+include = ["juplit/SKILL.md", "juplit/SKILL_migrate_from_nbdev.md"]
 
 [dependency-groups]
 dev = [
@@ -35,18 +36,18 @@ dev = [
 
 [tool.poe.tasks]
 init         = {cmd = "pre-commit install", help = "Install git hooks"}
-sync         = {script = "juplit._tasks:sync_notebooks", help = "Sync .py<->ipynb for all paired notebooks"}
-nb           = {script = "juplit._tasks:generate_notebooks", help = "Generate .ipynb from .py files (run after cloning)"}
-clean        = {script = "juplit._tasks:clean_notebooks", help = "Sync then delete all .ipynb files"}
+sync         = {script = "juplit.tasks:sync_notebooks", help = "Sync .py<->ipynb for all paired notebooks"}
+nb           = {script = "juplit.tasks:generate_notebooks", help = "Generate .ipynb from .py files (run after cloning)"}
+clean        = {script = "juplit.tasks:clean_notebooks", help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest", help = "Run tests"}
-docs         = {cmd = "mkdocs serve", help = "Serve docs locally for preview"}
-docs-build   = {cmd = "mkdocs build", help = "Build docs site"}
-docs-deploy  = {cmd = "mkdocs gh-deploy --force", help = "Deploy docs to GitHub Pages"}
+docs         = {sequence = [{ref = "sync"}, {cmd = "mkdocs serve"}], help = "Sync notebooks then serve docs locally for preview"}
+docs-build   = {sequence = [{ref = "sync"}, {cmd = "mkdocs build"}], help = "Sync notebooks then build docs site"}
+docs-deploy  = {sequence = [{ref = "sync"}, {cmd = "mkdocs gh-deploy --force"}], help = "Sync notebooks then deploy docs to GitHub Pages"}
 
 [tool.poe.tasks.pypi]
 help = "Build the package and publish to PyPI"
 sequence = [
-    {ref = "_check_env --env_name UV_PUBLISH_TOKEN"},
+    {ref = "_check_env UV_PUBLISH_TOKEN"},
     {cmd = "rm -rf dist/*"},
     {cmd = "uv build"},
     {cmd = "uv publish"},
@@ -58,7 +59,7 @@ script = "juplit._dev:check_env"
 args = [{name = "env_name", positional = true}]
 
 [tool.juplit]
-notebook_src_dir = "juplit"
+notebook_src_dirs = ["juplit", "docs"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

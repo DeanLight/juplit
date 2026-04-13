@@ -80,8 +80,8 @@ It returns `False` on normal import, so test code never runs in production.
 | `poe clean` | Sync then delete all `.ipynb` files — use before AI agent sessions |
 | `poe init` | Install git pre-commit hooks |
 | `poe test` | Run pytest across all `.py` files |
-| `poe docs` | Serve docs locally for preview |
-| `poe docs-deploy` | Deploy docs to GitHub Pages |
+| `poe docs` | Sync notebooks then serve docs locally for preview |
+| `poe docs-deploy` | Sync notebooks then deploy docs to GitHub Pages |
 
 ## Workflow
 
@@ -156,11 +156,11 @@ init         = {cmd = "pre-commit install"}
 sync         = {cmd = "juplit sync"}
 clean        = {cmd = "juplit clean"}
 test         = {cmd = "pytest"}
-docs         = {cmd = "mkdocs serve"}
-docs-deploy  = {cmd = "mkdocs gh-deploy --force"}
+docs         = {sequence = [{ref = "sync"}, {cmd = "mkdocs serve"}]}
+docs-deploy  = {sequence = [{ref = "sync"}, {cmd = "mkdocs gh-deploy --force"}]}
 
 [tool.juplit]
-notebook_src_dir = "your_module_name"   # directory scanned for paired .py files
+notebook_src_dirs = ["your_module_name", "docs"]  # dirs scanned for paired .py files
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

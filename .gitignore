@@ -1,5 +1,9 @@
+.envrc
 juplit/**/*.ipynb
 juplit/*.ipynb
+docs/**/*.ipynb
+docs/*.ipynb
+.sync_hashes.json
 .ipynb_checkpoints/
 dist/
 __pycache__/
