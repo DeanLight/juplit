@@ -70,6 +70,6 @@ formats = "ipynb,py:percent"
 
 [tool.pytest.ini_options]
 testpaths = ["juplit"]
-python_files = ["*.py"]
+python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
