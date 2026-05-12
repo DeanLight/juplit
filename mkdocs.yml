@@ -30,6 +30,9 @@ theme:
         name: Switch to light mode
 
 markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
   - pymdownx.snippets:
       base_path: .
 
@@ -50,7 +53,6 @@ plugins:
             show_symbol_type_toc: true
   - mkdocs-jupyter:
       include: ["**/*.ipynb"]
-      ignore_h1: false
       execute: false
 
 nav:

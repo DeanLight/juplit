@@ -15,4 +15,6 @@ jobs:
         with:
           enable-caching: true
       - run: uv sync --all-groups
+      # .ipynb under docs/ is gitignored; generate from paired .py before mkdocs-jupyter runs
+      - run: uv run poe nb
       - run: uv run mkdocs gh-deploy --force

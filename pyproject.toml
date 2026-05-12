@@ -44,9 +44,9 @@ sync         = {script = "juplit.tasks:sync_notebooks", help = "Sync .py<->ipynb
 nb           = {script = "juplit.tasks:generate_notebooks", help = "Generate .ipynb from .py files (run after cloning)"}
 clean        = {script = "juplit.tasks:clean_notebooks", help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest", help = "Run tests"}
-docs         = {sequence = [{ref = "sync"}, {cmd = "mkdocs serve"}], help = "Sync notebooks then serve docs locally for preview"}
-docs-build   = {sequence = [{ref = "sync"}, {cmd = "mkdocs build"}], help = "Sync notebooks then build docs site"}
-docs-deploy  = {sequence = [{ref = "sync"}, {cmd = "mkdocs gh-deploy --force"}], help = "Sync notebooks then deploy docs to GitHub Pages"}
+docs         = {sequence = [{ref = "nb"}, {cmd = "mkdocs serve"}], help = "Generate notebooks then serve docs locally for preview"}
+docs-build   = {sequence = [{ref = "nb"}, {cmd = "mkdocs build"}], help = "Generate notebooks then build docs site"}
+docs-deploy  = {sequence = [{ref = "nb"}, {cmd = "mkdocs gh-deploy --force"}], help = "Generate notebooks then deploy docs to GitHub Pages"}
 
 [tool.poe.tasks.pypi]
 help = "Build the package and publish to PyPI"
