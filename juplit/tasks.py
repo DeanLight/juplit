@@ -76,7 +76,7 @@ def _fmt(label: str, names: list[str]) -> str:
     return f"{len(names)} {label}: {', '.join(names)}"
 
 
-# ── Hash-based change tracking ────────────────────────────────────────────────
+# ── Hash-based sync-direction detection ───────────────────────────────────────
 
 def _hash_file(path: Path) -> str:
     try:
@@ -85,13 +85,24 @@ def _hash_file(path: Path) -> str:
         return ""
 
 
+def _paired_ipynb(py_file: Path) -> Path:
+    """Return the `.ipynb` path paired with a percent-format `.py` file.
+
+    juplit uses the default jupytext convention of same directory and base
+    name (``formats = "ipynb,py:percent"``), so the paired notebook is simply
+    the `.py` file with an `.ipynb` suffix.
+    """
+    return py_file.with_suffix(".ipynb")
+
+
 def _state_path() -> Path:
     toml_path = _find_pyproject_toml()
     root = toml_path.parent if toml_path is not None else Path.cwd()
     return root / ".sync_hashes.json"
 
 
-def _load_hashes() -> dict[str, str]:
+def _load_hashes() -> dict[str, dict[str, str]]:
+    """Return the per-file `{name: {"py": hash, "ipynb": hash}}` from the last sync."""
     p = _state_path()
     if p.exists():
         try:
@@ -102,18 +113,44 @@ def _load_hashes() -> dict[str, str]:
 
 
 def _save_hashes(files: list[Path]) -> None:
-    state = {f.name: _hash_file(f) for f in files if f.exists()}
+    """Record the `.py` and `.ipynb` hashes of each file as the new sync baseline."""
+    state = {
+        f.name: {"py": _hash_file(f), "ipynb": _hash_file(_paired_ipynb(f))}
+        for f in files
+        if f.exists()
+    }
     _state_path().write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
 
 
 # ── Jupytext runner ───────────────────────────────────────────────────────────
 
 def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[str]], list[str]]:
-    """Run jupytext and classify files by comparing hashes against the last sync.
+    """Run jupytext and classify each file by the sync direction it triggered.
 
-    Returns (groups, errors) where groups has keys: updated, unchanged, skipped.
+    Hashes both the `.py` file and its paired `.ipynb` immediately before and
+    after invoking jupytext, then reads the direction off of which side's
+    content jupytext rewrote:
+
+    * the `.py` content changed  → the `.ipynb` was newer, so `ipynb → py`
+    * only the `.ipynb` changed   → the `.py` was newer, so `py → ipynb`
+    * neither changed             → already in sync
+
+    A file is also flagged as a *conflict* when, comparing the pre-sync state
+    against the hashes recorded at the previous sync (`.sync_hashes.json`),
+    **both** the `.py` and its `.ipynb` changed. jupytext resolves that case
+    purely by modification time — it keeps the newer file and silently
+    overwrites the other — so the losing side's edits may be gone. The updated
+    baseline hashes are written back after the run.
+
+    Returns (groups, errors) where groups has keys: to_ipynb, to_py,
+    unchanged, skipped, conflicts. A conflict name also appears in whichever
+    direction jupytext ended up applying.
     """
-    prev_hashes = _load_hashes()
+    prev = _load_hashes()
+    before = {
+        f: (_hash_file(f), _hash_file(_paired_ipynb(f)))
+        for f in files
+    }
 
     result = subprocess.run(
         ["jupytext"] + args + [str(f) for f in files],
@@ -139,20 +176,43 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     if result.returncode != 0 and not errors:
         errors.append(result.stderr.strip() or f"jupytext exited with code {result.returncode}")
 
-    updated: list[str] = []
+    to_ipynb: list[str] = []
+    to_py: list[str] = []
     unchanged: list[str] = []
     skipped: list[str] = []
+    conflicts: list[str] = []
 
     for f in files:
         if f.name in skipped_names:
             skipped.append(f.name)
-        elif _hash_file(f) != prev_hashes.get(f.name, ""):
-            updated.append(f.name)
+            continue
+        py_before, ipynb_before = before[f]
+
+        recorded = prev.get(f.name)
+        if (
+            recorded
+            and py_before != recorded.get("py")
+            and ipynb_before != recorded.get("ipynb")
+        ):
+            conflicts.append(f.name)
+
+        py_changed = _hash_file(f) != py_before
+        ipynb_changed = _hash_file(_paired_ipynb(f)) != ipynb_before
+        if py_changed:
+            to_py.append(f.name)
+        elif ipynb_changed:
+            to_ipynb.append(f.name)
         else:
             unchanged.append(f.name)
 
     _save_hashes(files)
-    return {"updated": updated, "unchanged": unchanged, "skipped": skipped}, errors
+    return {
+        "to_ipynb": to_ipynb,
+        "to_py": to_py,
+        "unchanged": unchanged,
+        "skipped": skipped,
+        "conflicts": conflicts,
+    }, errors
 
 
 # ── Public tasks ─────────────────────────────────────────────────────────────
@@ -164,7 +224,10 @@ def sync_notebooks() -> None:
     `pyproject.toml`) and calls `jupytext --sync` on every `.py` file that has
     a jupytext percent-format header pairing it with an `.ipynb`.
 
-    Prints a summary of updated, unchanged, and skipped files.
+    Prints a summary that splits synced files by direction (`py → ipynb` vs
+    `ipynb → py`), alongside unchanged and skipped files. Also flags any
+    *conflict* — a file whose `.py` and `.ipynb` both changed since the last
+    sync, where jupytext keeps the newer by mtime and overwrites the other.
     Raises `SystemExit(1)` if jupytext reports any errors.
     """
     files = _find_percent_notebook_py_files()
@@ -173,12 +236,20 @@ def sync_notebooks() -> None:
         return
 
     groups, errors = _run_jupytext(["--sync"], files)
-    if groups["updated"]:
-        print(_fmt("sync updated", groups["updated"]))
+    if groups["to_ipynb"]:
+        print(_fmt("synced py → ipynb", groups["to_ipynb"]))
+    if groups["to_py"]:
+        print(_fmt("synced ipynb → py", groups["to_py"]))
     if groups["unchanged"]:
         print(_fmt("sync unchanged", groups["unchanged"]))
     if groups["skipped"]:
         print(_fmt("sync skipped (not paired)", groups["skipped"]))
+    if groups["conflicts"]:
+        print(_fmt(
+            "sync CONFLICT — both .py and .ipynb changed since last sync; "
+            "jupytext kept the newer by mtime and overwrote the other",
+            groups["conflicts"],
+        ))
     if not any(groups.values()):
         print("Sync: nothing to do")
     for err in errors:
@@ -203,8 +274,8 @@ def generate_notebooks() -> None:
         return
 
     groups, errors = _run_jupytext(["--to", "notebook"], files)
-    if groups["updated"]:
-        print(_fmt("nb created/updated", groups["updated"]))
+    if groups["to_ipynb"]:
+        print(_fmt("nb created/updated", groups["to_ipynb"]))
     if groups["unchanged"]:
         print(_fmt("nb unchanged", groups["unchanged"]))
     if groups["skipped"]:
