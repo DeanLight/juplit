@@ -1,7 +1,22 @@
 # Design — `juplit sync` direction reporting & conflict flagging
 
 **Task:** juplit: report sync direction (py↔ipynb) and flag conflicts
-**Branch:** `claude/juplit-sync-direction-nrwr5l` · **PR:** #1 · **Status:** design in review
+**Branch:** `claude/juplit-sync-direction-nrwr5l` · **PR:** #1 · **Status:** approved, implemented
+
+## Revision — path keying (post-approval bug fix)
+
+A basename-keying bug was found after approval: the sync state and summary
+groups were keyed by `f.name`, so two paired notebooks sharing a basename
+across directories (`a/x.py` vs `b/x.py`) collided on one state key — the last
+written won, the other was falsely flagged (a spurious `conflict` every run
+that never stabilized), and the summary couldn't tell them apart. Fix: key the
+state and the reported groups by a stable **repo-root-relative posix path** via
+two small helpers, `_repo_root()` and `_key(f, root)`, and match jupytext's
+"not a paired notebook" warnings by resolved path rather than basename. This is
+reflected in §1/§3/§4 below. Backward-compat: existing `.sync_hashes.json`
+files use basename keys, so the first sync after this change shows a one-time
+full re-classification as the state is rewritten with path keys — acceptable,
+no migration.
 
 ## Problem
 
@@ -58,8 +73,20 @@ def _paired_ipynb(py_file: Path) -> Path:
     raise NotImplementedError
 
 
+def _repo_root() -> Path:
+    """The dir the state + keys anchor to (pyproject parent, resolved)."""
+    raise NotImplementedError
+
+
+def _key(f: Path, root: Path) -> str:
+    """Stable per-file key: f's repo-root-relative posix path (NOT basename)."""
+    # try: f.resolve().relative_to(root).as_posix()
+    # except ValueError: f.resolve().as_posix()
+    raise NotImplementedError
+
+
 def _load_hashes() -> dict[str, dict[str, str]]:
-    """Read {name: {"py": hash, "ipynb": hash}} recorded at the last sync."""
+    """Read {path: {"py": hash, "ipynb": hash}} recorded at the last sync."""
     # if .sync_hashes.json exists: parse and return it
     # on missing/corrupt file: return {}
     raise NotImplementedError
@@ -67,7 +94,8 @@ def _load_hashes() -> dict[str, dict[str, str]]:
 
 def _save_hashes(files: list[Path]) -> None:
     """Record the .py and .ipynb hashes of each file as the new baseline."""
-    # for each existing file: store {"py": hash(py), "ipynb": hash(paired ipynb)}
+    # root = _repo_root()
+    # for each existing file: store _key(f, root) -> {"py": hash, "ipynb": hash}
     # write .sync_hashes.json (pretty, sorted) next to pyproject.toml
     raise NotImplementedError
 
@@ -78,19 +106,21 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     groups keys: to_ipynb, to_py, unchanged, skipped, conflicts.
     """
     # prev   = _load_hashes()                       # last recorded sync
+    # root   = _repo_root()
     # before = {f: (hash(py), hash(ipynb)) for f in files}   # pre-sync snapshot
     # run `jupytext <args> <files>` as a subprocess, capture stderr
-    # parse stderr for "not a paired" warnings -> skipped_names, and errors
+    # parse stderr for "not a paired" warnings -> skipped_paths (resolved), + errors
     # for each file f:
-    #     if f in skipped_names: -> skipped; continue
-    #     # conflict: BOTH sides differ from last recorded sync
-    #     rec = prev.get(f.name)
+    #     key = _key(f, root)                        # all groups keyed by path
+    #     if f.resolve() in skipped_paths: -> skipped.append(key); continue
+    #     # conflict: BOTH sides differ from last recorded sync (looked up by key)
+    #     rec = prev.get(key)
     #     if rec and before.py != rec["py"] and before.ipynb != rec["ipynb"]:
-    #         conflicts.append(f)
+    #         conflicts.append(key)
     #     # direction: which side did jupytext rewrite during THIS run?
-    #     if hash(py)   != before.py:    -> to_py      # ipynb was newer
-    #     elif hash(ipynb) != before.ipynb: -> to_ipynb   # py was newer
-    #     else:                          -> unchanged
+    #     if hash(py)   != before.py:    -> to_py.append(key)     # ipynb was newer
+    #     elif hash(ipynb) != before.ipynb: -> to_ipynb.append(key) # py was newer
+    #     else:                          -> unchanged.append(key)
     # _save_hashes(files)                            # new baseline
     # return groups, errors
     raise NotImplementedError
@@ -142,12 +172,14 @@ engine itself). Reporting uses builtin `print`, consistent with the rest of
 **`juplit/juplit/tasks.py`** (modify):
 - Re-add `import json` (removed earlier this PR).
 - Under the `# Hash-based …` banner: keep `_hash_file`; add `_paired_ipynb`;
-  restore `_state_path`, `_load_hashes`, and `_save_hashes` — with
-  `_save_hashes` now recording **both** `py` and `ipynb` hashes per file
-  (`{name: {"py":…, "ipynb":…}}`) instead of the old py-only string map.
+  add `_repo_root` and `_key` (path keying); `_state_path`/`_load_hashes`/
+  `_save_hashes` keyed by `_key(f, root)` (repo-root-relative path), with
+  `_save_hashes` recording **both** `py` and `ipynb` hashes per file
+  (`{path: {"py":…, "ipynb":…}}`).
 - Rewrite `_run_jupytext`: before/after both-sides snapshot for direction, plus
-  the `prev`-vs-pre-sync conflict check; return dict gains `to_ipynb`, `to_py`,
-  `conflicts` (replacing the old single `updated`).
+  the `prev`-vs-pre-sync conflict check; every group entry is a `_key` path;
+  "not a paired" skips matched by resolved path. Return dict gains `to_ipynb`,
+  `to_py`, `conflicts`.
 - `sync_notebooks`: print the two direction lines + the conflict line.
 - `generate_notebooks`: map `to_ipynb` → "nb created/updated".
 
@@ -173,6 +205,10 @@ direction is deterministic without sleeps):
   jupytext behavior the flag warns about).
 - boundary — edit only one side after a baseline → asserts **no** "sync
   CONFLICT".
+- regression (path keying) — two paired notebooks sharing a basename in
+  different dirs (`pkg/a/x.py`, `pkg/b/x.py`) with differing content; a no-edit
+  second sync asserts **no** "sync CONFLICT", both reported as unchanged under
+  their distinct `pkg/a/x.py` / `pkg/b/x.py` keys, and neither `.py` modified.
 
 Existing `test_smoke.py` (package exports, CLI `--help`) stays green.
 

@@ -95,14 +95,31 @@ def _paired_ipynb(py_file: Path) -> Path:
     return py_file.with_suffix(".ipynb")
 
 
-def _state_path() -> Path:
+def _repo_root() -> Path:
+    """The directory the sync state and file keys are anchored to (pyproject parent)."""
     toml_path = _find_pyproject_toml()
     root = toml_path.parent if toml_path is not None else Path.cwd()
-    return root / ".sync_hashes.json"
+    return root.resolve()
+
+
+def _key(f: Path, root: Path) -> str:
+    """Stable per-file key: the repo-root-relative posix path.
+
+    Keying by path (not basename) keeps same-named notebooks in different
+    directories (`a/x.py` vs `b/x.py`) from colliding in the sync state.
+    """
+    try:
+        return f.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return f.resolve().as_posix()
+
+
+def _state_path() -> Path:
+    return _repo_root() / ".sync_hashes.json"
 
 
 def _load_hashes() -> dict[str, dict[str, str]]:
-    """Return the per-file `{name: {"py": hash, "ipynb": hash}}` from the last sync."""
+    """Return the per-file `{path: {"py": hash, "ipynb": hash}}` from the last sync."""
     p = _state_path()
     if p.exists():
         try:
@@ -114,8 +131,9 @@ def _load_hashes() -> dict[str, dict[str, str]]:
 
 def _save_hashes(files: list[Path]) -> None:
     """Record the `.py` and `.ipynb` hashes of each file as the new sync baseline."""
+    root = _repo_root()
     state = {
-        f.name: {"py": _hash_file(f), "ipynb": _hash_file(_paired_ipynb(f))}
+        _key(f, root): {"py": _hash_file(f), "ipynb": _hash_file(_paired_ipynb(f))}
         for f in files
         if f.exists()
     }
@@ -142,11 +160,15 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     overwrites the other — so the losing side's edits may be gone. The updated
     baseline hashes are written back after the run.
 
+    Files are keyed and reported by their repo-root-relative path (not
+    basename), so same-named notebooks in different directories don't collide.
+
     Returns (groups, errors) where groups has keys: to_ipynb, to_py,
-    unchanged, skipped, conflicts. A conflict name also appears in whichever
+    unchanged, skipped, conflicts. A conflict path also appears in whichever
     direction jupytext ended up applying.
     """
     prev = _load_hashes()
+    root = _repo_root()
     before = {
         f: (_hash_file(f), _hash_file(_paired_ipynb(f)))
         for f in files
@@ -158,7 +180,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
         text=True,
     )
 
-    skipped_names: set[str] = set()
+    skipped_paths: set[Path] = set()
     errors: list[str] = []
 
     for line in result.stderr.splitlines():
@@ -167,7 +189,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
             words = line.split()
             try:
                 idx = next(i for i, w in enumerate(words) if w == "Warning:")
-                skipped_names.add(Path(words[idx + 1]).name)
+                skipped_paths.add(Path(words[idx + 1]).resolve())
             except (StopIteration, IndexError):
                 pass
         elif "error" in low:
@@ -183,27 +205,28 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     conflicts: list[str] = []
 
     for f in files:
-        if f.name in skipped_names:
-            skipped.append(f.name)
+        key = _key(f, root)
+        if f.resolve() in skipped_paths:
+            skipped.append(key)
             continue
         py_before, ipynb_before = before[f]
 
-        recorded = prev.get(f.name)
+        recorded = prev.get(key)
         if (
             recorded
             and py_before != recorded.get("py")
             and ipynb_before != recorded.get("ipynb")
         ):
-            conflicts.append(f.name)
+            conflicts.append(key)
 
         py_changed = _hash_file(f) != py_before
         ipynb_changed = _hash_file(_paired_ipynb(f)) != ipynb_before
         if py_changed:
-            to_py.append(f.name)
+            to_py.append(key)
         elif ipynb_changed:
-            to_ipynb.append(f.name)
+            to_ipynb.append(key)
         else:
-            unchanged.append(f.name)
+            unchanged.append(key)
 
     _save_hashes(files)
     return {
