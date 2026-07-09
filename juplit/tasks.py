@@ -130,14 +130,27 @@ def _load_hashes() -> dict[str, dict[str, str]]:
 
 
 def _save_hashes(files: list[Path]) -> None:
-    """Record the `.py` and `.ipynb` hashes of each file as the new sync baseline."""
+    """Record the `.py` and `.ipynb` hashes of each file as the new sync baseline.
+
+    Merges into the existing state rather than replacing it, so callers can save
+    a subset (e.g. everything except overwrite-blocked files, whose old baseline
+    must survive) without dropping the others' recorded hashes.
+    """
     root = _repo_root()
-    state = {
-        _key(f, root): {"py": _hash_file(f), "ipynb": _hash_file(_paired_ipynb(f))}
-        for f in files
-        if f.exists()
-    }
+    state = _load_hashes()
+    for f in files:
+        if f.exists():
+            state[_key(f, root)] = {"py": _hash_file(f), "ipynb": _hash_file(_paired_ipynb(f))}
     _state_path().write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def _py_edited_since_sync(f: Path, root: Path, prev: dict[str, dict[str, str]]) -> bool:
+    """True if `f`'s `.py` content differs from the hash recorded at the last sync.
+
+    False when there is no baseline yet (first sync) — nothing to protect.
+    """
+    recorded = prev.get(_key(f, root))
+    return bool(recorded) and _hash_file(f) != recorded.get("py")
 
 
 # ── Jupytext runner ───────────────────────────────────────────────────────────
@@ -163,10 +176,25 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     Files are keyed and reported by their repo-root-relative path (not
     basename), so same-named notebooks in different directories don't collide.
 
+    When run with `--check-source-is-newer`, jupytext refuses to overwrite a
+    `.py` that is not the newest of its pair, printing
+    `Error: Source <py> is older than paired file <ipynb>` and skipping it. Such
+    files are collected into the `overwrite_risk` group (they were *not* synced)
+    rather than treated as fatal errors.
+
+    Does not persist state — the caller writes `.sync_hashes.json` once (so a
+    two-group sync doesn't have one group clobber the other's baseline, and
+    overwrite-blocked files keep their prior baseline).
+
     Returns (groups, errors) where groups has keys: to_ipynb, to_py,
-    unchanged, skipped, conflicts. A conflict path also appears in whichever
-    direction jupytext ended up applying.
+    unchanged, skipped, conflicts, overwrite_risk. A conflict path also appears
+    in whichever direction jupytext ended up applying.
     """
+    empty = {k: [] for k in
+             ("to_ipynb", "to_py", "unchanged", "skipped", "conflicts", "overwrite_risk")}
+    if not files:
+        return empty, []
+
     prev = _load_hashes()
     root = _repo_root()
     before = {
@@ -181,11 +209,17 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     )
 
     skipped_paths: set[Path] = set()
+    risk_paths: set[Path] = set()
     errors: list[str] = []
 
     for line in result.stderr.splitlines():
         low = line.lower()
-        if "warning" in low and "not a paired" in low:
+        if "is older than paired file" in line:
+            start = line.index("Source ") + len("Source ")
+            end = line.index(" is older than paired file")
+            src = line[start:end].strip().strip("'\"")
+            risk_paths.add(Path(src).resolve())
+        elif "warning" in low and "not a paired" in low:
             words = line.split()
             try:
                 idx = next(i for i, w in enumerate(words) if w == "Warning:")
@@ -203,10 +237,15 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     unchanged: list[str] = []
     skipped: list[str] = []
     conflicts: list[str] = []
+    overwrite_risk: list[str] = []
 
     for f in files:
         key = _key(f, root)
-        if f.resolve() in skipped_paths:
+        resolved = f.resolve()
+        if resolved in risk_paths:
+            overwrite_risk.append(key)
+            continue
+        if resolved in skipped_paths:
             skipped.append(key)
             continue
         py_before, ipynb_before = before[f]
@@ -228,13 +267,13 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
         else:
             unchanged.append(key)
 
-    _save_hashes(files)
     return {
         "to_ipynb": to_ipynb,
         "to_py": to_py,
         "unchanged": unchanged,
         "skipped": skipped,
         "conflicts": conflicts,
+        "overwrite_risk": overwrite_risk,
     }, errors
 
 
@@ -251,14 +290,38 @@ def sync_notebooks() -> None:
     `ipynb → py`), alongside unchanged and skipped files. Also flags any
     *conflict* — a file whose `.py` and `.ipynb` both changed since the last
     sync, where jupytext keeps the newer by mtime and overwrites the other.
-    Raises `SystemExit(1)` if jupytext reports any errors.
+
+    Protects a `.py` that has edits since the last sync from being silently
+    overwritten by a newer (mtime) `.ipynb`: such files are run with jupytext's
+    `--check-source-is-newer` guard, so instead of clobbering the `.py` they are
+    left untouched and reported as *overwrite blocked*. Files whose `.py` is
+    unchanged since the last sync still sync both ways as usual.
+
+    Raises `SystemExit(1)` if jupytext reports any errors, or if any file was
+    overwrite-blocked.
     """
     files = _find_percent_notebook_py_files()
     if not files:
         print("No percent notebook .py files found.")
         return
 
-    groups, errors = _run_jupytext(["--sync"], files)
+    prev = _load_hashes()
+    root = _repo_root()
+    guarded = [f for f in files if _py_edited_since_sync(f, root, prev)]
+    normal = [f for f in files if f not in guarded]
+
+    g_normal, e_normal = _run_jupytext(["--sync"], normal)
+    g_guard, e_guard = _run_jupytext(
+        ["--sync", "--check-source-is-newer", "--warn-only"], guarded
+    )
+    groups = {k: g_normal[k] + g_guard[k] for k in g_normal}
+    errors = e_normal + e_guard
+
+    # Blocked files were not synced — keep their prior baseline so the guard
+    # keeps firing until the user resolves them; save everything else once.
+    risk_keys = set(groups["overwrite_risk"])
+    _save_hashes([f for f in files if _key(f, root) not in risk_keys])
+
     if groups["to_ipynb"]:
         print(_fmt("synced py → ipynb", groups["to_ipynb"]))
     if groups["to_py"]:
@@ -273,11 +336,18 @@ def sync_notebooks() -> None:
             "jupytext kept the newer by mtime and overwrote the other",
             groups["conflicts"],
         ))
+    if groups["overwrite_risk"]:
+        print(_fmt(
+            "sync OVERWRITE BLOCKED — .py has unsynced edits but its .ipynb is "
+            "newer; refused to overwrite the .py (resolve, e.g. delete the stale "
+            ".ipynb or touch the .py, then re-sync)",
+            groups["overwrite_risk"],
+        ))
     if not any(groups.values()):
         print("Sync: nothing to do")
     for err in errors:
         print(f"sync error: {err}")
-    if errors:
+    if errors or groups["overwrite_risk"]:
         raise SystemExit(1)
 
 
@@ -297,6 +367,7 @@ def generate_notebooks() -> None:
         return
 
     groups, errors = _run_jupytext(["--to", "notebook"], files)
+    _save_hashes(files)
     if groups["to_ipynb"]:
         print(_fmt("nb created/updated", groups["to_ipynb"]))
     if groups["unchanged"]:

@@ -101,6 +101,14 @@ def generate_notebooks() -> None:
 - An overwrite-risk file is *not* synced, so its content is unchanged on disk —
   it must land in `overwrite_risk`, not `unchanged`.
 
+**Implementation note (refinement during build).** A blocked file must **keep
+its prior baseline** — if `_save_hashes` recorded its current (divergent) state,
+`_py_edited_since_sync` would read False on the next run and the guard would
+stop firing, so the edit could then be lost. So `_save_hashes` **merges** into
+the existing state (rather than replacing it), and `sync_notebooks` saves every
+file **except** those in `overwrite_risk`. This preserves the intent of the
+approved design; it only pins down how state is written.
+
 ## 2. Libraries and dependencies
 
 **Already in the project / stdlib:** `hashlib`, `json`, `subprocess`, `pathlib`
