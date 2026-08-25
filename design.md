@@ -16,7 +16,7 @@ CPython 3.12.3). Transcripts are in **Appendix A**. One finding is new relative 
 
 ## Changes from the spec's `## Tentative interfaces`
 
-Per Code Design, the sketch is intent, not contract. Adopted as written except for these six.
+Per Code Design, the sketch is intent, not contract. Adopted as written except for these seven.
 Each one gives the old shape, the new shape, and the one-line reason.
 
 **1. `juplit view` — the cells you name, not the whole file.** *(revised after review — the first draft folded this into a `--source` flag; it is a command again.)*
@@ -27,13 +27,13 @@ Each one gives the old shape, the new shape, and the one-line reason.
   - `juplit view <nb> [3-7] [--full]` — the **read**: the source of the cells you name, each with its rendered outputs. No range means the whole notebook, still bounded (outputs truncated, images as digests).
 - *Why:* the ability to pull just the cells you are working on is worth a command of its own — an agent that has to `cat` a 600-line `.py` to see cell 7 has paid for the notebook it was avoiding. Splitting index from read is also *fewer* flags than the alternative: `view` subsumes the earlier `juplit cell <nb> <i> --full`, so the surface is two commands with one flag rather than two commands with three. `view` reads the `.py` for source and the paired `.ipynb` for outputs, so it also works on ordinary pairs that have no notebook on disk (source only) — useful outside the artifact case.
 
-**2. Partial runs: rehearse with `run`, repair with `rerun`.** *(reworded after review.)*
+**2. `try` never writes, `run` always writes.** *(revised after review — the first draft called these `run` and `rerun`, which differ by three letters and by whether they spend money.)*
 
-- *Spec sketch:* `juplit run --file /tmp/attempt.py`, plus a TODO — "add ability to run only some cells".
-- *This design:* both commands can execute a range of a notebook's cells. What differs is where the outputs end up:
-  - `juplit run --nb x.py --cells 3-7` — executes those cells on the kernel and **prints** their outputs to the terminal. Nothing on disk changes; the `.ipynb` is not opened for writing. This is the rehearsal: look at the result, decide.
-  - `juplit rerun x.py --cells 3-7` — executes the same cells and **saves the outputs into the committed `.ipynb`**, replacing whatever was in those cells and re-stamping them as current. This is the repair, and it is the only one of the two that produces a git diff.
-- *Why:* the two jobs are genuinely different — try something without touching the artifact of record, versus update the artifact of record on purpose. Keeping them in separate commands means no flag can accidentally turn a rehearsal into a write. `rerun --stale/--all` was already in the spec's sketch, so `--cells` is a third selector on an existing command rather than new surface.
+- *Spec sketch:* `juplit run` for scratch execution, `juplit rerun <nb> --stale|--all` for repair, plus a TODO — "add ability to run only some cells".
+- *This design:* the same two jobs, renamed so the dangerous one is not a prefix of the safe one:
+  - `juplit try CODE | --file F | --from <nb> --cells 3-7` — executes on the kernel and **prints** the outputs. Nothing on disk changes, the `.ipynb` is never opened for writing.
+  - `juplit run <nb> --stale | --all | --cells 3-7` — executes those cells and **saves** the outputs into the paired `.ipynb`, re-stamping them as current. The only one of the two that produces a git diff.
+- *Why:* one rule covers the pair — **`try` never writes, `run` always writes** — and `run` gets the meaning it already has everywhere else (papermill, `nbconvert --execute`): running a notebook puts the outputs in it. It also matches the spec's own phase names, `# 1. VIEW / # 2. TRY / # 3. ADD ONCE HAPPY`, so the three loop commands are `view`, `try`, `add-cell`. **`run`'s selector is mandatory**: a bare `juplit run x.py` errors and prints the three options, because the plausible default (`--all`) is the ~20-minute real-money path.
 
 **3. `juplit html` added.**
 
@@ -59,9 +59,19 @@ Each one gives the old shape, the new shape, and the one-line reason.
 - *This design:* `juplit/view.py`.
 - *Why:* `juplit/inspect.py` shadows a stdlib module name inside the package. Renaming costs nothing and matches the spec's own "view" vocabulary.
 
-Everything else — `artifact_notebooks` glob config, `juplit cells / kernel / run /
-commit-cell --from-last / check / rerun / scrub`, `clean --force`, the one-line additions to
-`sync|nb|clean` — is implemented with the spec's names and flags.
+**7. `add-cell` and `normalize`, not `commit-cell` and `scrub`.** *(revised after review, same naming pass as 2.)*
+
+- *Spec sketch:* `juplit commit-cell <nb> --from-last` and `juplit scrub <nb>`.
+- *This design:* `juplit add-cell <nb> --from-last` and `juplit normalize <nb>`.
+- *Why:* two collisions, both in a tool that lives next to git. `commit-cell` reads as though it stages or commits something — it touches git not at all — and `add-cell` completes the try → add story. `scrub` was the worse of the two: juplit already has `clean`, which **deletes notebooks**, so a near-synonym that merely rewrites metadata is a name one bad guess away from data loss. `normalize` says what it does and cannot be confused with `clean`.
+
+Everything else — `artifact_notebooks` glob config, `juplit cells / kernel / check / stamp`,
+`--from-last`, `clean --force`, the one-line additions to `sync|nb|clean` — is implemented with
+the spec's names and flags.
+
+Every per-notebook command is addressed by the **`.py`** path (the source of truth) and finds the
+`.ipynb` itself; passing the `.ipynb` works too, so an agent never has to think about which half
+to name.
 
 Answers carried straight from the spec's Q&A: unverified outputs **warn** by default and fail
 under `--strict` (Q1); `jupyter_client` is a **hard** dependency (Q2); kernels are **named**,
@@ -128,11 +138,11 @@ Component by component. Each answers the three gate questions: **does it need to
   - *Needs to exist:* yes — an agent that cannot pull the two cells it is editing has to read the whole `.py`, which is the cost the index just avoided.
   - *Already solved:* no. `sed -n '120,180p'` on the `.py` gets close, but it cannot map a cell index to a line range and it never shows the outputs.
   - *Smallest form:* reuses the digest and truncation helpers; ~60 lines on top of them.
-- **`commit-cell`**
+- **`add-cell`**
   - *Needs to exist:* yes — capability 4.
   - *Already solved:* no.
   - *Smallest form:* `jupytext.reads/writes` (byte-stable, A5) plus an `nbformat` insert. ~60 lines.
-- **`rerun`**
+- **`run` (notebook execution)**
   - *Needs to exist:* yes — the spec's repair path. Without it a stale cell can only be fixed by a full re-run, which is the ~20-minute real-money path.
   - *Already solved:* no.
   - *Smallest form:* reuses `kernel.execute` and the stamp writer. ~50 lines.
@@ -257,8 +267,8 @@ def write_artifact(ipynb: Path, nb: NotebookNode) -> None:
 ### 1b. Repair and blessing — `juplit/artifacts.py` (continued)
 
 ```python
-def commit_cell(py_file: Path, source: str, outputs: list[NotebookNode], *,
-                index: int | None = None, cell_type: str = "code") -> int:
+def add_cell(py_file: Path, source: str, outputs: list[NotebookNode], *,
+             index: int | None = None, cell_type: str = "code") -> int:
     """Insert one cell into the .py AND its captured outputs into the paired .ipynb.
 
     Returns the inserted index. index=None appends. Both halves are built from the same
@@ -278,15 +288,18 @@ def commit_cell(py_file: Path, source: str, outputs: list[NotebookNode], *,
     raise NotImplementedError
 
 
-def rerun(py_file: Path, *, cells: list[int] | None = None, stale_only: bool = False,
-          all_cells: bool = False, name: str = "default") -> dict[str, list[int]]:
-    """Re-execute selected cells on a kernel and write back outputs + fresh stamps.
+def run_cells(py_file: Path, *, cells: list[int] | None = None, stale_only: bool = False,
+              all_cells: bool = False, name: str = "default") -> dict[str, list[int]]:
+    """Execute selected cells on a kernel and SAVE their outputs + fresh stamps into the .ipynb.
 
-    Exactly one selector: `cells` (explicit indices), `stale_only` (whatever scan() calls
-    stale), or `all_cells` (the clean build: stop the session kernel, start a fresh one,
-    run every code cell top to bottom). Returns {"executed": [...], "failed": [...]}.
+    Exactly one selector, and one is required — there is no default, because the
+    plausible default (`all_cells`) is the expensive one: `cells` (explicit indices),
+    `stale_only` (whatever scan() calls stale), or `all_cells` (the clean build: stop the
+    session kernel, start a fresh one, run every code cell top to bottom). Returns
+    {"executed": [...], "failed": [...]}.
 
-    Imports juplit.kernel lazily so `sync` / `check` never pay the jupyter_client import.
+    The writing counterpart of `kernel.execute`, which only ever returns outputs. Imports
+    juplit.kernel lazily so `sync` / `check` never pay the jupyter_client import.
     """
     # resolve the selector -> ordered list of code-cell indices
     # if all_cells: kernel.stop(name); kernel.start(name)
@@ -307,8 +320,10 @@ def stamp(py_file: Path, *, cells: list[int] | None = None, force: bool = False)
     raise NotImplementedError
 
 
-def scrub(py_file: Path) -> dict[str, object]:
-    """Apply normalize() to a committed artifact and report what it cost.
+def normalize_notebook(py_file: Path) -> dict[str, object]:
+    """Apply normalize() to a committed artifact on disk and report what it cost.
+
+    The file-level counterpart of normalize(), which works on an in-memory node.
 
     Returns {"changed": bool, "bytes": int, "oversized": [(cell_index, digest), ...]}.
     Oversized outputs are reported only — never downscaled, never spilled to files
@@ -331,18 +346,20 @@ def check_artifacts(strict: bool = False) -> None:
 
 def artifacts_errors() -> None:
     """Error cases for this module."""
-    # commit_cell: .py not declared an artifact  -> ValueError("<p> is not in artifact_notebooks")
-    # commit_cell: paired .ipynb missing         -> ValueError("... run `juplit nb` first")
-    # commit_cell: halves disagree on source     -> ValueError("<p> and its .ipynb are out of sync;
-    #                                               run `juplit sync` first")  [refuse, never pick a winner]
-    # commit_cell: index out of range            -> ValueError naming the valid range
-    # commit_cell: post-condition fails          -> restore both files from the pre-write bytes,
-    #                                               raise RuntimeError
-    # rerun: more than one selector given        -> ValueError("pass exactly one of --cells/--stale/--all")
-    # rerun: index is a markdown cell            -> ValueError("cell <i> is markdown; nothing to run")
-    # stamp: cell is stale and not force         -> ValueError("cell <i> is STALE; `juplit rerun` it
-    #                                               or pass --force to assert the outputs are current")
-    # scrub/check: .ipynb unreadable as nbformat -> ValueError("<p> is not a valid notebook")
+    # add_cell: .py not declared an artifact    -> ValueError("<p> is not in artifact_notebooks")
+    # add_cell: paired .ipynb missing           -> ValueError("... run `juplit nb` first")
+    # add_cell: halves disagree on source       -> ValueError("<p> and its .ipynb are out of sync;
+    #                                              run `juplit sync` first")  [refuse, never pick a winner]
+    # add_cell: index out of range              -> ValueError naming the valid range
+    # add_cell: post-condition fails            -> restore both files from the pre-write bytes,
+    #                                              raise RuntimeError
+    # run_cells: no selector given              -> ValueError("pass one of --cells / --stale / --all;
+    #                                              --all restarts the kernel and re-runs everything")
+    # run_cells: more than one selector         -> ValueError("pass exactly one of --cells/--stale/--all")
+    # run_cells: index is a markdown cell       -> ValueError("cell <i> is markdown; nothing to run")
+    # stamp: cell is stale and not force        -> ValueError("cell <i> is STALE; `juplit run <nb> --cells <i>`
+    #                                              it, or pass --force to assert the outputs are current")
+    # normalize/check: unreadable as nbformat   -> ValueError("<p> is not a valid notebook")
 ```
 
 ### 1c. Detached kernel — `juplit/kernel.py` (new)
@@ -466,7 +483,7 @@ def view_cells(py_file: Path, cells: list[int] | None = None, *, full: bool = Fa
 
     Source comes from the `.py` (the source of truth) and outputs from the paired
     `.ipynb`, so this works on an ordinary pair with no notebook on disk too: it just
-    prints source. Cell indices are the same ones `cells_table` prints and `rerun
+    prints source. Cell indices are the same ones `cells_table` prints and `run
     --cells` accepts.
     """
     raise NotImplementedError
@@ -500,7 +517,7 @@ def sync_notebooks() -> None:                       # MODIFIED
     # ...existing guarded/normal split and summary lines, unchanged...
     # for each artifact pair: write_artifact(); states = scan()
     # if stale: print "artifact STALE: <nb> cells 4,7 — outputs predate the current .py
-    #                  (`juplit rerun <nb> --stale`, or revert the source edit)"
+    #                  (`juplit run <nb> --stale`, or revert the source edit)"
     # if unverified: print the warning line
     # if gitignored: print "artifact <nb> is gitignored — its outputs will never be committed"
     # exit 1 on stale, alongside today's exit 1 on overwrite_risk
@@ -535,24 +552,25 @@ def html(py_or_ipynb: Path, out_dir: Path | None = None) -> Path:   # NEW
     raise NotImplementedError
 ```
 
-CLI (`juplit/cli.py`, cyclopts, same `@app.command` shape as today):
+CLI (`juplit/cli.py`, cyclopts, same `@app.command` shape as today). Every per-notebook command
+takes the `.py` path and finds the `.ipynb` itself; the `.ipynb` path is accepted too:
 
 - `juplit cells <nb>` — the digest index: one line per cell, no source, never any base64.
 - `juplit view <nb> [R] [--full]` — the named cells' source plus their rendered outputs; no range means all of them.
 - `juplit kernel start|stop|status [--name] [--cwd] [--kernel]` — the persistent kernel.
-- `juplit run [CODE] [--file F] [--nb N --cells R] [--name] [--timeout]` — execute, print, write nothing.
-- `juplit commit-cell <nb> [--from-last] [--file F] [--index i] [--markdown]` — insert the accepted cell plus its captured outputs.
-- `juplit rerun <nb> [--stale | --all | --cells R] [--name]` — re-execute and write back outputs + stamps.
+- `juplit try [CODE] [--file F] [--from <nb> --cells R] [--name] [--timeout]` — execute, print the outputs, **write nothing**.
+- `juplit add-cell <nb> [--from-last] [--file F] [--index i] [--markdown]` — insert the accepted cell plus its captured outputs.
+- `juplit run <nb> (--stale | --all | --cells R) [--name]` — execute those cells and **save** their outputs + stamps. Selector required.
 - `juplit stamp <nb> [--cells R] [--force]` — bless `unverified` outputs.
 - `juplit check [--strict]` — the CI / pre-commit guard; reads committed files only.
-- `juplit scrub <nb>` — apply the running-state scrub, report sizes.
+- `juplit normalize <nb>` — strip the running state from a committed notebook, report sizes.
 - `juplit html <nb> [--out DIR]` — nbconvert wrapper.
 - `juplit clean [--force]` — existing; now keeps artifacts and reaps kernels.
 - `juplit sync`, `juplit nb` — existing; one extra summary line when artifacts are involved.
 
-`--from-last` is the ergonomic core of the loop: `juplit run` caches its snippet and captured
+`--from-last` is the ergonomic core of the loop: `juplit try` caches its snippet and captured
 outputs in `.juplit/last-run.json`, so accepting an attempt is
-`juplit commit-cell experiments/ablation.py --from-last` — the agent does not re-send the code,
+`juplit add-cell experiments/ablation.py --from-last` — the agent does not re-send the code,
 and what lands is provably what it looked at, not a re-execution.
 
 ---
@@ -562,7 +580,7 @@ and what lands is provably what it looked at, not a re-execution.
 **Already in the project (reused):**
 
 - `jupytext` — `--sync` and `--to notebook --update` through the existing `_run_jupytext`;
-  `jupytext.reads/writes` in memory for `commit_cell` (byte-stable round trip, A5).
+  `jupytext.reads/writes` in memory for `add_cell` (byte-stable round trip, A5).
 - `cyclopts` — every new command, same decorator style.
 - stdlib — `hashlib` (stamps), `fnmatch` (globs), `subprocess` (kernel launch, `git check-ignore`,
   nbconvert), `json`, `pathlib`, `signal`/`os` (interrupt, liveness), `base64`+`struct` (PNG
@@ -597,9 +615,9 @@ declaring the already-present `nbformat`.
 
 **`juplit/artifacts.py`** — NEW, ~280 lines. Registry (`artifact_globs`, `is_artifact`,
 `artifact_py_files`), provenance (`source_sha`, `ensure_filter`, `stamp_cell`, `cell_state`,
-`scan`), hygiene (`normalize`, `write_artifact`, `scrub`), repair (`commit_cell`, `rerun`,
-`stamp`), and the guard (`check_artifacts`). Sectioned with the existing `# ── banner ──`
-convention. Imports `juplit.kernel` **lazily** inside `rerun` so `sync`/`check` never pay the
+`scan`), hygiene (`normalize`, `write_artifact`, `normalize_notebook`), repair (`add_cell`,
+`run_cells`, `stamp`), and the guard (`check_artifacts`). Sectioned with the existing
+`# ── banner ──` convention. Imports `juplit.kernel` **lazily** inside `run_cells` so `sync`/`check` never pay the
 `jupyter_client` import.
 
 **`juplit/kernel.py`** — NEW, ~200 lines. `session_path`, `start`, `alive`, `status`, `stop`,
@@ -616,7 +634,7 @@ format — it is a kernel module, not a notebook module.
 - `clean_notebooks(force=False)` — exclude artifact `.ipynb`s from the unlink loop; reap kernels; two new summary lines.
 - `html()` — NEW, at the end of the public-tasks section.
 - `_find_percent_notebook_py_files()` — unchanged; `artifacts.artifact_py_files()` unions on top.
-- `_save_hashes()` — unchanged, now also called from `commit_cell`/`rerun` to refresh a pair's baseline.
+- `_save_hashes()` — unchanged, now also called from `add_cell`/`run_cells` to refresh a pair's baseline.
 
 **`juplit/cli.py`** — MODIFIED (~120 lines added): the twelve commands listed above;
 `clean` gains `--force`; `main()` unchanged.
@@ -686,10 +704,10 @@ ipykernel stays green.
 - happy: `parse_cell_range("1,4,9-11") == [1, 4, 9, 10, 11]`; error-path: `"7-3"` raises `ValueError`.
 
 **End to end — `test_artifacts.py`**
-- **the agent loop, the acceptance criterion:** run a failing snippet through `kernel.execute`, assert the notebook on disk is byte-identical; run the fixed snippet; `commit_cell` it; assert the `.ipynb` gained exactly one cell carrying the successful outputs, that no `error` output ever reaches the file, and that `git diff --numstat` on the `.ipynb` shows insertions and **zero** deletions.
-- happy: `rerun(--stale)` clears the stale verdict and leaves untouched cells byte-identical; `rerun(--all)` restarts the kernel first (a variable set beforehand is gone).
-- error-path: `commit_cell` on out-of-sync halves raises `ValueError` and leaves both files unmodified.
-- happy: after `commit_cell`, `sync_notebooks()` reports no conflict (the baseline refresh works).
+- **the agent loop, the acceptance criterion:** run a failing snippet through `kernel.execute`, assert the notebook on disk is byte-identical; run the fixed snippet; `add_cell` it; assert the `.ipynb` gained exactly one cell carrying the successful outputs, that no `error` output ever reaches the file, and that `git diff --numstat` on the `.ipynb` shows insertions and **zero** deletions.
+- happy: `run_cells(stale_only=True)` clears the stale verdict and leaves untouched cells byte-identical; `run_cells(all_cells=True)` restarts the kernel first (a variable set beforehand is gone) — boundary: `run_cells` with no selector raises `ValueError` naming the three, and writes nothing.
+- error-path: `add_cell` on out-of-sync halves raises `ValueError` and leaves both files unmodified.
+- happy: after `add_cell`, `sync_notebooks()` reports no conflict (the baseline refresh works).
 
 ---
 
@@ -706,15 +724,15 @@ ipykernel stays green.
 
 **~1 690 added, ~120 modified**, of which **~770 is production code** — against the spec's
 ~560-line estimate. The gap is the three things the spec's estimate predates: `juplit html`
-(~15), `juplit stamp` (~25), `rerun --cells` (~20), and the size-budget half of `check` (~30),
+(~15), `juplit stamp` (~25), `run --cells` (~20), and the size-budget half of `check` (~30),
 plus ~120 lines of digest rendering that the sketch showed but did not cost.
 
 **Deletable without failing a spec requirement**, in the order I would cut them:
-1. `juplit scrub` as a *command* — `normalize` runs on every write, so scrub only exists to fix a notebook a human hand-edited. (~25 lines)
-2. `--markdown` on `commit-cell` — an agent can write markdown cells into the `.py` directly and re-sync. (~10 lines)
-3. `--full` on `view` — the default truncation is generous, and `juplit run` re-prints an output in full anyway. (~15 lines)
+1. `juplit normalize` as a *command* — the scrub runs on every artifact write anyway, so the command only exists to fix a notebook a human hand-edited. (~25 lines)
+2. `--markdown` on `add-cell` — an agent can write markdown cells into the `.py` directly and re-sync. (~10 lines)
+3. `--full` on `view` — the default truncation is generous, and `juplit try` re-prints an output in full anyway. (~15 lines)
 
-The largest single risk is `commit_cell`'s post-condition and rollback path: a bug there corrupts
+The largest single risk is `add_cell`'s post-condition and rollback path: a bug there corrupts
 both halves of a pair at once. It is deliberately the smallest and most heavily tested function
 in the design.
 
@@ -769,8 +787,8 @@ magics, which jupytext round-trips as commented lines.
 2. Declare `artifact_notebooks = ["experiments/**/*.py"]` → `juplit nb` now keeps them, and warns that the `.ipynb` is still gitignored.
 3. Un-ignore it, commit → `juplit cells` shows the notebook as an index of digests, not 4 MB of JSON.
 4. Edit one cell's source → `juplit check` reports it STALE and exits 1. The outputs are still there.
-5. `juplit rerun --stale` → back to clean, and only that cell's outputs changed.
-6. The agent loop: `juplit kernel start`, a snippet that fails (`ZeroDivisionError` — the notebook on disk is unchanged), the fixed snippet, `juplit commit-cell --from-last`, `git diff --numstat` showing insertions only.
+5. `juplit run --stale` → back to clean, and only that cell's outputs changed.
+6. The agent loop: `juplit kernel start`, a `juplit try` that fails (`ZeroDivisionError` — the notebook on disk is unchanged), the fixed attempt, `juplit add-cell --from-last`, `git diff --numstat` showing insertions only.
 7. `juplit clean` keeps the artifact and reaps the kernel; `juplit html` renders it for someone with no Python.
 
 **Why this example.** Every juplit command in the feature is the natural tool for exactly one
@@ -798,16 +816,16 @@ juplit view experiments/ablation.py 2                # that cell's source and ou
 juplit check                                         # clean → exit 0
 # edit cell 1 in the .py
 juplit check                                         # "cell 1 STALE" → exit 1, outputs intact
-juplit rerun experiments/ablation.py --stale         # repair just that cell
+juplit run experiments/ablation.py --stale           # repair just that cell
 juplit kernel start --name ablation                  # the loop begins
-juplit run 'df["score"].mean() / 0' --name ablation  # fails; notebook on disk untouched
-juplit run --file attempt.py --name ablation         # the fixed attempt
-juplit commit-cell experiments/ablation.py --from-last   # the snippet + the outputs just seen
+juplit try 'df["score"].mean() / 0' --name ablation  # fails; notebook on disk untouched
+juplit try --file attempt.py --name ablation         # the fixed attempt
+juplit add-cell experiments/ablation.py --from-last  # the snippet + the outputs just seen
 juplit clean                                         # keeps the artifact, reaps the kernel
 juplit html experiments/ablation.py                  # standalone HTML for a non-Python reader
 ```
 
-`juplit stamp` and `juplit scrub` are **reference-only** — they exist for a human who ran the
+`juplit stamp` and `juplit normalize` are **reference-only** — they exist for a human who ran the
 notebook in Jupyter, which is not the tutorial's story.
 
 ### 6.5 Out of scope / folds
@@ -821,10 +839,12 @@ notebook in Jupyter, which is not the tutorial's story.
 ### 6.6 `SKILL.md` (agent-facing, not a docs page)
 
 Two new sections, ~120 lines: **"Artifact notebooks"** (what they are, the one config key, the
-un-ignore line, the rule that `.py` stays output-free) and **"The execution loop"** (the seven
-commands in the order an agent uses them, with the two hard rules: never read a raw `.ipynb` into
-context — use `juplit cells`; never commit a cell you have not seen the output of — use
-`--from-last`). `juplit skill` already ships the file, so nothing else changes.
+un-ignore line, the rule that `.py` stays output-free) and **"The execution loop"** — the
+commands in the order an agent uses them (`cells` → `view` → `kernel start` → `try` →
+`add-cell`, with `run` / `check` for repair), led by the three rules that keep an agent out of
+trouble: **`try` never writes and `run` always writes**; never read a raw `.ipynb` into context,
+use `juplit cells`; never add a cell whose output you have not seen, use `--from-last`.
+`juplit skill` already ships the file, so nothing else changes.
 
 ---
 
