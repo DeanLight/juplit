@@ -26,10 +26,17 @@ def save_last_run(source: str, outputs: list[NotebookNode]) -> None:
 
 
 def load_last_run() -> dict:
+    """The previous `juplit try`, with its outputs back as nbformat nodes.
+
+    They round-trip through JSON as plain dicts, which nbformat's writer rejects.
+    """
+    import nbformat
+
     path = last_run_path()
     if not path.exists():
         raise ValueError("no previous `juplit try` to take — run one first")
-    return json.loads(path.read_text())
+    last = json.loads(path.read_text())
+    return last | {"outputs": [nbformat.from_dict(o) for o in last["outputs"]]}
 
 
 def _snippets(code: str | None, file: Path | None, nb: Path | None,

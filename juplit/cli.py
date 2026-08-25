@@ -115,6 +115,52 @@ def try_(code: str | None = None, file: str | None = None, nb: str | None = None
              nb=Path(nb) if nb else None, cells=cells, name=name, timeout=timeout)
 
 
+@app.command(name="add-cell")
+def add_cell(notebook: str, from_last: bool = False, file: str | None = None,
+             index: int | None = None, markdown: bool = False) -> None:
+    """Insert a cell into the .py and the outputs it produced into the .ipynb.
+
+    --from-last takes the snippet and the outputs of the previous `juplit try`, so what
+    lands is provably what you looked at, not a re-execution. --file inserts a file's
+    contents with no outputs. Appends unless --index says where.
+    """
+    from juplit.artifacts import add_cell as insert_cell
+    from juplit.trying import load_last_run
+
+    if from_last:
+        last = load_last_run()
+        source, outputs = last["source"], last["outputs"]
+    elif file is not None:
+        source, outputs = Path(file).read_text(), []
+    else:
+        raise ValueError("pass --from-last or --file")
+
+    at = insert_cell(_source_file(notebook), source, outputs, index=index,
+                     cell_type="markdown" if markdown else "code")
+    print(f"inserted cell [{at:02d}] into {Path(notebook).stem}.py and .ipynb")
+
+
+@app.command
+def run(notebook: str, cells: str | None = None, stale: bool = False, all: bool = False,
+        name: str = "default", timeout: float = 300.0) -> None:
+    """Execute cells and SAVE their outputs into the notebook, freshly stamped.
+
+    Pass exactly one selector: --cells 3-7, --stale to repair just the cells whose
+    outputs no longer match their source, or --all for the clean build (restarts the
+    kernel and runs everything). There is no default — the plausible one is expensive.
+    """
+    from juplit.artifacts import run_cells
+    from juplit.view import parse_cell_range
+
+    report = run_cells(_source_file(notebook),
+                       cells=parse_cell_range(cells) if cells else None,
+                       stale_only=stale, all_cells=all, name=name, timeout=timeout)
+    ran = ",".join(str(i) for i in report["executed"]) or "nothing"
+    print(f"ran cells {ran}")
+    if report["failed"]:
+        print(f"cells with errors: {','.join(str(i) for i in report['failed'])}")
+
+
 @app.command
 def check(strict: bool = False) -> None:
     """Fail if a committed notebook's outputs no longer match the .py that produced them.

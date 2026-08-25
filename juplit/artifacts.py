@@ -423,3 +423,113 @@ def _source_drift(py_nb: NotebookNode, ipynb_nb: NotebookNode) -> int | None:
 
 def _indices(values: list[int]) -> str:
     return ",".join(str(v) for v in values)
+
+
+# ── Write-back ───────────────────────────────────────────────────────────────
+
+def add_cell(py_file: Path, source: str, outputs: list[NotebookNode],
+             index: int | None = None, cell_type: str = "code") -> int:
+    """Insert one cell into the `.py` and its captured outputs into the paired `.ipynb`.
+
+    Nothing is re-executed: the outputs written are the ones the caller already looked
+    at. Both halves are built from the same in-memory insert, so they cannot disagree
+    about ordering. Returns the index the cell landed at; `index=None` appends.
+    """
+    from juplit.tasks import _save_hashes
+
+    if not is_artifact(py_file):
+        raise ValueError(f"{py_file} is not in artifact_notebooks")
+    ipynb = _paired_ipynb(py_file)
+    py_before, ipynb_before = py_file.read_bytes(), None
+    py_nb = jupytext.reads(py_file.read_text(), fmt="py:percent")
+    nb = read_artifact(py_file)
+    ipynb_before = ipynb.read_bytes()
+
+    drift = _source_drift(py_nb, nb)
+    if drift is not None:
+        raise ValueError(
+            f"{py_file} and its .ipynb are out of sync at cell {drift} — run "
+            "`juplit sync` first"
+        )
+    if index is None:
+        index = len(py_nb.cells)
+    if not 0 <= index <= len(py_nb.cells):
+        raise ValueError(f"index {index} is out of range (0..{len(py_nb.cells)})")
+
+    make = nbformat.v4.new_code_cell if cell_type == "code" else nbformat.v4.new_markdown_cell
+    py_nb.cells.insert(index, make(source))
+    executed = make(source)
+    if cell_type == "code":
+        executed.outputs = list(outputs)
+        stamp_cell(executed)
+    nb.cells.insert(index, executed)
+
+    ensure_filter(py_nb)
+    py_file.write_text(jupytext.writes(py_nb, fmt="py:percent"))
+    write_artifact(ipynb, nb)
+
+    check = _source_drift(
+        jupytext.reads(py_file.read_text(), fmt="py:percent"),
+        nbformat.read(ipynb, as_version=4),
+    )
+    if check is not None:
+        py_file.write_bytes(py_before)
+        ipynb.write_bytes(ipynb_before)
+        raise RuntimeError(
+            f"insert left {py_file} and its .ipynb disagreeing at cell {check}; "
+            "both files were restored"
+        )
+    _save_hashes([py_file])
+    return index
+
+
+def run_cells(py_file: Path, cells: list[int] | None = None, stale_only: bool = False,
+              all_cells: bool = False, name: str = "default",
+              timeout: float = 300.0) -> dict[str, list[int]]:
+    """Execute selected cells and SAVE their outputs, freshly stamped, into the `.ipynb`.
+
+    Exactly one selector, and one is required: there is no default because the plausible
+    default — re-running everything — is the expensive one. `all_cells` is the clean
+    build: the kernel is restarted first so the run starts from nothing.
+
+    Returns {"executed": [...], "failed": [...]}; a cell whose output is an error counts
+    as failed but is still written, because that error is what the notebook now shows.
+    """
+    from juplit import kernel as kernel_module   # lazy: `sync` and `check` never pay for it
+    from juplit.tasks import _save_hashes
+
+    selectors = [cells is not None, stale_only, all_cells]
+    if sum(selectors) != 1:
+        raise ValueError(
+            "pass exactly one of --cells / --stale / --all "
+            "(--all restarts the kernel and re-runs the whole notebook)"
+        )
+
+    ipynb = _paired_ipynb(py_file)
+    nb = read_artifact(py_file)
+    if stale_only:
+        targets = scan(ipynb)["stale"]
+    elif all_cells:
+        targets = [i for i, cell in enumerate(nb.cells) if cell.cell_type == "code"]
+        kernel_module.stop(name)
+        kernel_module.start(name)
+    else:
+        targets = cells
+
+    executed, failed = [], []
+    for index in targets:
+        if index >= len(nb.cells):
+            raise ValueError(f"cell {index} is out of range (0..{len(nb.cells) - 1})")
+        cell = nb.cells[index]
+        if cell.cell_type != "code":
+            raise ValueError(f"cell {index} is markdown; nothing to run")
+        cell.outputs = kernel_module.execute(cell.source, name=name, timeout=timeout)
+        stamp_cell(cell)
+        executed.append(index)
+        if any(o.get("output_type") == "error" for o in cell.outputs):
+            failed.append(index)
+
+    if executed:
+        write_artifact(ipynb, nb)
+        _save_hashes([py_file])
+    return {"executed": executed, "failed": failed}
