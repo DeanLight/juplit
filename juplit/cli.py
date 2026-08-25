@@ -37,6 +37,41 @@ def clean(force: bool = False) -> None:
 
 
 @app.command
+def cells(notebook: str) -> None:
+    """List a notebook's cells: markdown headings, and a digest of each output.
+
+    The cheap first read — no source, no base64, so a 40-cell, 4 MB notebook costs a few
+    hundred tokens. The headings make it a table of contents you can navigate by; use the
+    indices with `juplit view`, `juplit run --cells` and `juplit stamp`.
+    """
+    from juplit.view import cells_table
+
+    print(cells_table(_paired_notebook(notebook)))
+
+
+@app.command
+def view(notebook: str, cells: str | None = None, full: bool = False) -> None:
+    """Show the source of the named cells, each with its outputs.
+
+    CELLS is a range like 3-7 or 1,4,9-11; omit it for the whole notebook. Long outputs
+    are truncated head-and-tail, and images are always shown as a digest — --full lifts
+    the text truncation, never the image rule.
+    """
+    from juplit.view import parse_cell_range, view_cells
+
+    indices = parse_cell_range(cells) if cells else None
+    print(view_cells(_source_file(notebook), cells=indices, full=full))
+
+
+@app.command
+def html(notebook: str, out: str | None = None) -> None:
+    """Render a notebook to standalone HTML (wraps `jupyter nbconvert`)."""
+    from juplit.tasks import html as render_html
+
+    render_html(Path(notebook), Path(out) if out else None)
+
+
+@app.command
 def check(strict: bool = False) -> None:
     """Fail if a committed notebook's outputs no longer match the .py that produced them.
 
@@ -57,8 +92,9 @@ def stamp(notebook: str, cells: str | None = None, force: bool = False) -> None:
     1,4,9-11; omit it to stamp every unverified cell.
     """
     from juplit.artifacts import stamp as stamp_artifact
+    from juplit.view import parse_cell_range
 
-    indices = _parse_cell_range(cells) if cells else None
+    indices = parse_cell_range(cells) if cells else None
     stamped = stamp_artifact(Path(notebook), cells=indices, force=force)
     print(f"stamped {len(stamped)} cell(s): {','.join(str(i) for i in stamped)}"
           if stamped else "stamp: nothing to do")
@@ -103,18 +139,16 @@ def skill_migrate() -> None:
     print(files("juplit").joinpath("SKILL_migrate_from_nbdev.md").read_text(), end="")
 
 
-def _parse_cell_range(spec: str) -> list[int]:
-    """"3", "3-7", "1,4,9-11" -> a sorted list of cell indices."""
-    indices: set[int] = set()
-    for part in spec.split(","):
-        if "-" in part:
-            start, end = (int(x) for x in part.split("-", 1))
-            if end < start:
-                raise ValueError(f"invalid cell range {part!r}: {end} is before {start}")
-            indices.update(range(start, end + 1))
-        else:
-            indices.add(int(part))
-    return sorted(indices)
+def _source_file(notebook: str) -> Path:
+    """Accept either half of a pair and return the `.py` — the source of truth."""
+    path = Path(notebook)
+    return path.with_suffix(".py") if path.suffix == ".ipynb" else path
+
+
+def _paired_notebook(notebook: str) -> Path:
+    """Accept either half of a pair and return the `.ipynb`."""
+    path = Path(notebook)
+    return path.with_suffix(".ipynb") if path.suffix == ".py" else path
 
 
 def main() -> None:

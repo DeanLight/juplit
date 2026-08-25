@@ -540,3 +540,31 @@ def clean_notebooks(force: bool = False) -> None:
         print(_fmt("clean kept artifact notebooks (--force to delete them too)", sorted(kept)))
     if not removed and not kept:
         print("clean: nothing to remove")
+
+
+def html(notebook: Path, out_dir: Path | None = None) -> Path:
+    """Render a notebook to standalone HTML with `jupyter nbconvert`. Returns the path.
+
+    A thin wrapper, on purpose: nbconvert already does this well, but agents learn what
+    a repo can do by reading its `[tool.poe.tasks]` table, and nbconvert never appears
+    there. Same subprocess shape as the jupytext calls above.
+    """
+    ipynb = _paired_ipynb(notebook) if notebook.suffix == ".py" else notebook
+    if not ipynb.exists():
+        raise ValueError(f"{ipynb} does not exist — run `juplit nb` first")
+
+    cmd = ["jupyter", "nbconvert", "--to", "html", str(ipynb)]
+    if out_dir is not None:
+        cmd += ["--output-dir", str(out_dir)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "`jupyter` is not on PATH — install nbconvert (`pip install nbconvert`)"
+        ) from None
+    if result.returncode != 0:
+        raise RuntimeError(f"nbconvert failed: {result.stderr.strip()}")
+
+    target = (out_dir or ipynb.parent) / f"{ipynb.stem}.html"
+    print(f"html: {target}")
+    return target
