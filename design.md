@@ -19,17 +19,21 @@ CPython 3.12.3). Transcripts are in **Appendix A**. One finding is new relative 
 Per Code Design, the sketch is intent, not contract. Adopted as written except for these six.
 Each one gives the old shape, the new shape, and the one-line reason.
 
-**1. No separate `view` command.**
+**1. `juplit view` — the cells you name, not the whole file.** *(revised after review — the first draft folded this into a `--source` flag; it is a command again.)*
 
 - *Spec sketch:* `juplit cells`, plus a TODO — "we need to have a view command or a view source etc".
-- *This design:* `juplit cells <nb> [--source] [--cells R]`. No `view`.
-- *Why:* the `.py` is already plain text the agent can read directly. What it cannot get from the file is the **cell index ↔ source** mapping that every other command is addressed by (`--cells 3-7`, `juplit cell 7`, `rerun --cells`), and `cells --source` is exactly that mapping. A second command that prints the source of a file the agent can already `cat` fails the existence gate.
+- *This design:* two commands with distinct jobs, and no `--source` flag on either.
+  - `juplit cells <nb>` — the **index**: one line per cell, output digests, provenance state. No source. This is what an agent reads first, and what keeps a 40-cell, 4 MB notebook to a few hundred tokens.
+  - `juplit view <nb> [3-7] [--full]` — the **read**: the source of the cells you name, each with its rendered outputs. No range means the whole notebook, still bounded (outputs truncated, images as digests).
+- *Why:* the ability to pull just the cells you are working on is worth a command of its own — an agent that has to `cat` a 600-line `.py` to see cell 7 has paid for the notebook it was avoiding. Splitting index from read is also *fewer* flags than the alternative: `view` subsumes the earlier `juplit cell <nb> <i> --full`, so the surface is two commands with one flag rather than two commands with three. `view` reads the `.py` for source and the paired `.ipynb` for outputs, so it also works on ordinary pairs that have no notebook on disk (source only) — useful outside the artifact case.
 
-**2. Partial runs split across two commands.**
+**2. Partial runs: rehearse with `run`, repair with `rerun`.** *(reworded after review.)*
 
 - *Spec sketch:* `juplit run --file /tmp/attempt.py`, plus a TODO — "add ability to run only some cells".
-- *This design:* `juplit run` gains `--nb <py> --cells 3-7` (execute, print, **write nothing**); `juplit rerun <py> --cells 3-7` is the write-back form.
-- *Why:* "run only some cells" is two different jobs — rehearse without touching the artifact, and repair the artifact. `rerun --stale/--all` was already in the sketch, so `--cells` is a third selector on an existing command rather than new surface.
+- *This design:* both commands can execute a range of a notebook's cells. What differs is where the outputs end up:
+  - `juplit run --nb x.py --cells 3-7` — executes those cells on the kernel and **prints** their outputs to the terminal. Nothing on disk changes; the `.ipynb` is not opened for writing. This is the rehearsal: look at the result, decide.
+  - `juplit rerun x.py --cells 3-7` — executes the same cells and **saves the outputs into the committed `.ipynb`**, replacing whatever was in those cells and re-stamping them as current. This is the repair, and it is the only one of the two that produces a git diff.
+- *Why:* the two jobs are genuinely different — try something without touching the artifact of record, versus update the artifact of record on purpose. Keeping them in separate commands means no flag can accidentally turn a rehearsal into a write. `rerun --stale/--all` was already in the spec's sketch, so `--cells` is a third selector on an existing command rather than new surface.
 
 **3. `juplit html` added.**
 
@@ -55,7 +59,7 @@ Each one gives the old shape, the new shape, and the one-line reason.
 - *This design:* `juplit/view.py`.
 - *Why:* `juplit/inspect.py` shadows a stdlib module name inside the package. Renaming costs nothing and matches the spec's own "view" vocabulary.
 
-Everything else — `artifact_notebooks` glob config, `juplit cells / cell / kernel / run /
+Everything else — `artifact_notebooks` glob config, `juplit cells / kernel / run /
 commit-cell --from-last / check / rerun / scrub`, `clean --force`, the one-line additions to
 `sync|nb|clean` — is implemented with the spec's names and flags.
 
@@ -116,10 +120,14 @@ Component by component. Each answers the three gate questions: **does it need to
   - *Needs to exist:* yes — capabilities 3 and 4.
   - *Already solved:* `nbclient` does it, but pulling a second execution engine — with its own kernel lifecycle, and no cross-invocation persistence — to save ~30 lines of message mapping is a bad trade.
   - *Smallest form:* `nbformat.v4.new_output` per message type. ~30 lines.
-- **Digest read (`cells` / `cell`)**
+- **Digest index (`cells`)**
   - *Needs to exist:* yes — capability 1, and it is the entire token argument.
   - *Already solved:* no.
-  - *Smallest form:* a pure `nbformat` walk plus string formatting. ~150 lines.
+  - *Smallest form:* a pure `nbformat` walk plus string formatting. ~90 lines.
+- **Bounded read (`view`)**
+  - *Needs to exist:* yes — an agent that cannot pull the two cells it is editing has to read the whole `.py`, which is the cost the index just avoided.
+  - *Already solved:* no. `sed -n '120,180p'` on the `.py` gets close, but it cannot map a cell index to a line range and it never shows the outputs.
+  - *Smallest form:* reuses the digest and truncation helpers; ~60 lines on top of them.
 - **`commit-cell`**
   - *Needs to exist:* yes — capability 4.
   - *Already solved:* no.
@@ -437,23 +445,30 @@ def output_digest(output: NotebookNode) -> str:
     raise NotImplementedError
 
 
-def cells_table(ipynb: Path, *, source: bool = False, cells: list[int] | None = None,
-                max_source_lines: int = 8) -> str:
-    """The cheap read (capability 1). One line per cell; never any base64.
+def cells_table(ipynb: Path) -> str:
+    """The index (capability 1). One line per cell, no source, never any base64.
 
         [00] md          6L
         [06] code  12L   out: stream 1.2KB, image/png 640x480 82KB      clean
         [07] code   4L   out: text/plain 3L "[1200 rows x 8 columns]"   STALE
 
-    Sources are omitted by default, which is what keeps a 40-cell, 4 MB notebook to a few
-    hundred tokens. `source=True` adds them truncated to max_source_lines; `cells` limits
-    the rows. This is also the cell-index ↔ source map every other command is addressed by.
+    A 40-cell, 4 MB notebook renders in a few hundred tokens. The index tells the agent
+    which cells it cares about; `view_cells` then pulls those.
     """
     raise NotImplementedError
 
 
-def cell_detail(ipynb: Path, index: int, *, full: bool = False) -> str:
-    """One cell whole: source, provenance state, and outputs rendered by truncate_output()."""
+def view_cells(py_file: Path, cells: list[int] | None = None, *, full: bool = False) -> str:
+    """The read: source of the named cells, each followed by its rendered outputs.
+
+    cells=None shows the whole notebook — still bounded, because outputs go through
+    truncate_output() and binary mime types are always digests.
+
+    Source comes from the `.py` (the source of truth) and outputs from the paired
+    `.ipynb`, so this works on an ordinary pair with no notebook on disk too: it just
+    prints source. Cell indices are the same ones `cells_table` prints and `rerun
+    --cells` accepts.
+    """
     raise NotImplementedError
 
 
@@ -522,8 +537,8 @@ def html(py_or_ipynb: Path, out_dir: Path | None = None) -> Path:   # NEW
 
 CLI (`juplit/cli.py`, cyclopts, same `@app.command` shape as today):
 
-- `juplit cells <nb> [--source] [--cells R]` — digest index of the notebook; never any base64.
-- `juplit cell <nb> <i> [--full]` — one cell whole.
+- `juplit cells <nb>` — the digest index: one line per cell, no source, never any base64.
+- `juplit view <nb> [R] [--full]` — the named cells' source plus their rendered outputs; no range means all of them.
 - `juplit kernel start|stop|status [--name] [--cwd] [--kernel]` — the persistent kernel.
 - `juplit run [CODE] [--file F] [--nb N --cells R] [--name] [--timeout]` — execute, print, write nothing.
 - `juplit commit-cell <nb> [--from-last] [--file F] [--index i] [--markdown]` — insert the accepted cell plus its captured outputs.
@@ -591,7 +606,7 @@ convention. Imports `juplit.kernel` **lazily** inside `rerun` so `sync`/`check` 
 `stop_all`, `execute`, and the IOPub→nbformat mapping. Knows nothing about artifacts or the `.py`
 format — it is a kernel module, not a notebook module.
 
-**`juplit/view.py`** — NEW, ~170 lines. `output_digest`, `cells_table`, `cell_detail`,
+**`juplit/view.py`** — NEW, ~170 lines. `output_digest`, `cells_table`, `view_cells`,
 `truncate_output`, `parse_cell_range`. Pure rendering: nbformat nodes in, strings out.
 
 **`juplit/tasks.py`** — MODIFIED (~90 lines changed):
@@ -603,7 +618,7 @@ format — it is a kernel module, not a notebook module.
 - `_find_percent_notebook_py_files()` — unchanged; `artifacts.artifact_py_files()` unions on top.
 - `_save_hashes()` — unchanged, now also called from `commit_cell`/`rerun` to refresh a pair's baseline.
 
-**`juplit/cli.py`** — MODIFIED (~120 lines added): the eleven commands in the table above;
+**`juplit/cli.py`** — MODIFIED (~120 lines added): the twelve commands listed above;
 `clean` gains `--force`; `main()` unchanged.
 
 **`juplit/test_artifacts.py`**, **`juplit/test_kernel.py`**, **`juplit/test_view.py`** — NEW
@@ -667,6 +682,7 @@ ipykernel stays green.
 - happy per type: `output_digest` on stream, `image/png` (dimensions from a crafted IHDR), error, `text/html`.
 - **token budget, the acceptance criterion:** a synthetic 40-cell notebook holding 4 MB of base64 renders through `cells_table` to under 4 000 characters, and the notebook's longest base64 blob does not appear as a substring of the rendered text.
 - boundary: a 10 000-line stream renders head+tail with an elision marker; `--full` on an image still yields the digest.
+- happy: `view_cells(py, [3, 4])` prints exactly those two cells' source, with their outputs, and nothing from cell 5 — boundary: on a pair with no `.ipynb` it prints source and says the notebook is not generated, rather than raising.
 - happy: `parse_cell_range("1,4,9-11") == [1, 4, 9, 10, 11]`; error-path: `"7-3"` raises `ValueError`.
 
 **End to end — `test_artifacts.py`**
@@ -696,7 +712,7 @@ plus ~120 lines of digest rendering that the sketch showed but did not cost.
 **Deletable without failing a spec requirement**, in the order I would cut them:
 1. `juplit scrub` as a *command* — `normalize` runs on every write, so scrub only exists to fix a notebook a human hand-edited. (~25 lines)
 2. `--markdown` on `commit-cell` — an agent can write markdown cells into the `.py` directly and re-sync. (~10 lines)
-3. `cell_detail --full` — `cells --source` plus `cell` covers it. (~20 lines)
+3. `--full` on `view` — the default truncation is generous, and `juplit run` re-prints an output in full anyway. (~15 lines)
 
 The largest single risk is `commit_cell`'s post-condition and rollback path: a bug there corrupts
 both halves of a pair at once. It is deliberately the smallest and most heavily tested function
@@ -778,7 +794,7 @@ juplit nb                                            # the wipe, before opting i
 # pyproject.toml: artifact_notebooks = ["experiments/**/*.py"]
 juplit nb                                            # outputs survive; warns "still gitignored"
 juplit cells experiments/ablation.py                 # the digest index — the token argument
-juplit cell experiments/ablation.py 2                # one cell whole
+juplit view experiments/ablation.py 2                # that cell's source and outputs
 juplit check                                         # clean → exit 0
 # edit cell 1 in the .py
 juplit check                                         # "cell 1 STALE" → exit 1, outputs intact
