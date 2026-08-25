@@ -336,10 +336,10 @@ def check_artifacts(strict: bool = False) -> None:
     """The pre-commit / CI guard. Reads committed files only — no kernel, no jupytext, no sidecar.
 
     Fails (exit 1) on: any `stale` cell; a missing cell_metadata_filter; a declared
-    artifact with no .ipynb; a notebook or single output over its size budget.
-    Warns on: `unverified` cells, and a declared artifact whose .ipynb is gitignored
-    (preserved locally and silently never committed looks identical to the feature not
-    working — issue #3). --strict promotes both warnings to failures.
+    artifact with no .ipynb; a notebook or single output over its size budget; and a
+    declared artifact whose .ipynb is gitignored (R2 — preserved locally and silently
+    never committed is indistinguishable from the feature not working, issue #3).
+    Warns on: `unverified` cells; --strict promotes that warning to a failure.
     """
     raise NotImplementedError
 
@@ -738,11 +738,56 @@ in the design.
 
 ---
 
-## 6. Docs design
+## 6. Stacking plan
+
+Six PRs, merged bottom-up. The seams are the ones the design already draws: the data-loss fix
+needs no provenance, provenance needs no kernel, reading needs no execution, executing needs no
+write path, and the docs demonstrate a public interface that by then exists. Each layer is a
+thing you would want even if the layers above it were abandoned.
+
+Branches are rooted at the task branch name, `claude/artifact-notebooks-execution-0xt0im-NN-<slug>`,
+shortened to `…-NN-<slug>` below. **`…-01-artifacts` branches off `main`**, and each later layer
+off the one below it. The design PR (#4) is not part of the stack — it carries `design.md` only,
+and can merge whenever.
+
+- **`…-01-artifacts`**
+  - *Lands:* the `artifact_notebooks` registry (`artifact_globs`, `is_artifact`, `artifact_py_files`), `normalize` / `write_artifact`, `--update` for artifact pairs in `nb`, `clean` keeping artifacts with `--force` to delete them, the gitignore warning, and `nbformat` declared as a dependency.
+  - *Stands alone because:* it closes issue #3 by itself — outputs stop being destroyed. Nothing here needs a stamp or a kernel, and the tests are the `nb`/`clean`/regression set.
+  - *Depends on:* nothing — branches off `main`.
+- **`…-02-provenance`**
+  - *Lands:* `src_sha256` stamps, `cell_metadata_filter` enforcement, `cell_state` / `scan`, the staleness report and non-zero exit in `sync` and `nb`, and the commands `check --strict`, `stamp`, `normalize`, with the size budgets. Adds `uv run juplit check` to CI.
+  - *Stands alone because:* the highest-priority bug — outputs silently contradicting their source — is caught and blocked with no kernel anywhere in the picture. Repair at this layer is "revert the edit, or re-run in Jupyter and `juplit stamp`"; `juplit run` arrives in 05 and makes it cheaper.
+  - *Depends on:* `…-01-artifacts`.
+- **`…-03-read`**
+  - *Lands:* `juplit/view.py` and the three no-kernel reads: `cells` (digest index), `view` (named cells' source plus outputs), `html` (nbconvert wrapper).
+  - *Stands alone because:* it is a pure reader over committed files; an agent gets the whole token argument here, before anything can execute. `html` rides along because it is the third way of looking at a notebook without running it, and a 15-line command is not worth a layer.
+  - *Depends on:* `…-02-provenance` — the index shows each cell's `clean`/`STALE`/`unverified` state.
+- **`…-04-kernel`**
+  - *Lands:* `juplit/kernel.py` (detached launch with the `sys.executable` argv fix, `alive`, `status`, `stop`, `stop_all`, `execute`), the `kernel` and `try` commands, `.juplit/` in `.gitignore`, `clean` reaping kernels, and `jupyter_client` as a dependency.
+  - *Stands alone because:* start a kernel, run a snippet across separate CLI calls, see the output rendered by 03. Writes nothing into any notebook, so it is complete without the layer above.
+  - *Depends on:* `…-03-read` — `try` prints its outputs through the same digest/truncation renderer.
+- **`…-05-writeback`**
+  - *Lands:* the two commands that change a committed notebook — `add-cell` (insert the accepted snippet plus the outputs `try` captured) and `run` (execute selected cells, save outputs, re-stamp), with the mandatory selector and the rollback path.
+  - *Stands alone because:* it completes the loop and every write goes through `write_artifact` from 01 and the stamps from 02; its tests are the diff-locality and out-of-sync-halves cases.
+  - *Depends on:* `…-04-kernel`.
+- **`…-06-docs`**
+  - *Lands:* `docs/artifact_notebooks.py` and its committed `.ipynb` (the dogfooded artifact notebook, un-ignored), the `api.md` reference additions, the mkdocs nav entry, the `README.md` section and the two new `SKILL.md` sections.
+  - *Stands alone because:* source below, docs above — the page demonstrates a public interface that is fully landed by 05, and it cannot be written before then because its committed outputs are produced by running the real commands.
+  - *Depends on:* `…-05-writeback`.
+
+Notes on the split:
+
+- **Every layer ships its own tests.** No layer is "the tests for the one below".
+- **Two candidate seams rejected.** Splitting `artifacts.py` from `tasks.py` would cut mutually dependent files rather than ideas; splitting `check` from the stamps would leave a bottom PR whose only feature is a guard with nothing to guard.
+- **The template PR is not a layer** — different repo. It lands as one PR after the juplit release that ships these commands, per §8.
+
+---
+
+## 7. Docs design
 
 The task ships source **and** docs, so the Code row and the Docs row both run (Code first).
 
-### 6.1 Audience & job
+### 7.1 Audience & job
 
 A researcher or agent in a repo that has just produced an expensive result — a notebook executed
 against a live endpoint, ~20 minutes and real money — who needs that result to survive in git,
@@ -750,7 +795,7 @@ to be reviewable on GitHub, and to be re-derivable cell by cell when the code mo
 audience: the agent doing the producing, which needs to know the loop exists at all (that part is
 carried by `SKILL.md`, not by the docs site).
 
-### 6.2 Page plan
+### 7.2 Page plan
 
 - **`docs/artifact_notebooks.py`** — **Tutorial**, new.
   - *Reader need:* "take me from a normal juplit repo to a committed, checked, agent-produced experiment notebook, once, end to end."
@@ -763,7 +808,7 @@ carried by `SKILL.md`, not by the docs site).
 One page, one type. No how-to page: there is exactly one task here and the tutorial is it —
 a second page would repeat it with different words.
 
-### 6.3 The running example
+### 7.3 The running example
 
 **Scenario & data.** A three-arm ablation. The notebook `experiments/ablation.py` has three
 cells: a hard-coded 12-row result table (`ARMS = [...]`, printed with `display`), a group-mean
@@ -803,7 +848,7 @@ demonstrates the un-ignore line it tells users to write. Authoring constraint th
 page must print **no** wall-clock times, temp paths, or pids, or its committed outputs churn on
 every re-run — the scratch dir is fixed, and pids are filtered out of the printed `kernel status`.
 
-### 6.4 Public-interface walkthrough
+### 7.4 Public-interface walkthrough
 
 In the order the running example reaches them:
 
@@ -828,7 +873,7 @@ juplit html experiments/ablation.py                  # standalone HTML for a non
 `juplit stamp` and `juplit normalize` are **reference-only** — they exist for a human who ran the
 notebook in Jupyter, which is not the tutorial's story.
 
-### 6.5 Out of scope / folds
+### 7.5 Out of scope / folds
 
 - No page on the persistent kernel's internals (ipc transport, `JPY_PARENT_PID`) — that is design
   rationale, and it lives in this file and in code comments, not in user docs.
@@ -836,7 +881,7 @@ notebook in Jupyter, which is not the tutorial's story.
 - Cut order if fewer pages are wanted: `api.md`'s CLI table folds into the tutorial's last cell;
   the tutorial itself is the last thing to cut, because the feature is unusable undocumented.
 
-### 6.6 `SKILL.md` (agent-facing, not a docs page)
+### 7.6 `SKILL.md` (agent-facing, not a docs page)
 
 Two new sections, ~120 lines: **"Artifact notebooks"** (what they are, the one config key, the
 un-ignore line, the rule that `.py` stays output-free) and **"The execution loop"** — the
@@ -848,7 +893,7 @@ use `juplit cells`; never add a cell whose output you have not seen, use `--from
 
 ---
 
-## 7. Companion PR — `juplit_template`
+## 8. Companion PR — `juplit_template`
 
 Same branch name, separate PR, ~60 lines. Design lives in that repo's `design.md`; summary:
 the `artifact_notebooks` key (commented, empty by default), `poe check` / `poe html` targets so
@@ -858,26 +903,16 @@ a README section, and a `juplit_version` default bump to the release that ships 
 
 ---
 
-## 8. Decisions for the reviewer
+## 9. Decisions — all resolved
 
-The spec answered the eight big ones. Four small ones remain — each has a recommendation, so
-"approved" with no comment means "take the recommendations".
+The spec answered the eight big ones; these four were raised in this design and answered in
+review on 2026-08-25. They are recorded here as decisions, not open questions.
 
-- **R1 — the docs helper.** The tutorial wants a two-line `sh()` that prints a command and its
-  output (§6.3). The style guide requires design approval for any helper. **Recommend: allow it**;
-  the alternative is eleven copies of a `subprocess.run(...).stdout` incantation.
-- **R2 — gitignored artifact: warn or fail?** The spec says "juplit warns"; the earlier parked
-  design made it a hard failure in `check`. **Recommend: warn everywhere, fail under `--strict`**
-  (as written above) — a fresh clone that has not yet edited `.gitignore` should not have its CI
-  broken by a warning it can act on.
-- **R3 — `execution_count`.** `normalize` nulls it, per the spec's "strips … execution counts".
-  It is the only visible change to a notebook a human executed in Jupyter (the numbers vanish
-  from the rendered page). **Recommend: null it** — keeping it churns the diff on every re-run,
-  which is the thing the scrub exists to prevent.
-- **R4 — juplit dogfooding its own docs page** as a committed artifact notebook (§6.3). It is the
-  best available end-to-end test of the feature and it makes the docs page render with real
-  outputs; the cost is that `docs/artifact_notebooks.ipynb` (~50 KB) lives in git and a careless
-  edit can churn it. **Recommend: yes.**
+- **R1 — the docs helper: allowed.** The tutorial may define a two-line `sh()` that prints a command and its output. The Docs Style Guide requires design approval for any helper in a doc; this is that approval, and it is limited to `sh()` — no other helper appears in the page.
+- **R2 — a gitignored artifact fails.** `juplit check` exits non-zero when a declared artifact's `.ipynb` is gitignored, without needing `--strict`. Stricter than the spec's "warns", and deliberately so: outputs preserved locally and never committed is indistinguishable from the feature not working, which is the exact failure issue #3 reported. `sync` and `nb` still only warn — they are not the guard.
+- **R3 — `normalize` nulls `execution_count`.** The rendered `[1]`, `[2]` markers disappear from a committed notebook; in exchange, a re-run that produces identical results produces no diff, which is what the scrub exists for.
+- **R4 — juplit dogfoods its own docs page.** `docs/artifact_notebooks.py` is declared in juplit's own `artifact_notebooks`, its `.ipynb` is committed with outputs and un-ignored. Authoring constraint follows: the page prints no wall-clock times, temp paths or pids, or its outputs churn on every re-run.
+- **Size budgets (decided with them):** 1 MB per output, 10 MB per notebook, overridable by `artifact_max_output_bytes` / `artifact_max_notebook_bytes`; `check` fails when either is exceeded.
 
 ---
 
