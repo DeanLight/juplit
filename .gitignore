@@ -4,6 +4,7 @@ juplit/*.ipynb
 docs/**/*.ipynb
 docs/*.ipynb
 .sync_hashes.json
+.juplit/
 .ipynb_checkpoints/
 dist/
 __pycache__/

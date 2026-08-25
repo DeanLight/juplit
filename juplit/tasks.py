@@ -153,6 +153,39 @@ def _py_edited_since_sync(f: Path, root: Path, prev: dict[str, dict[str, str]]) 
     return bool(recorded) and _hash_file(f) != recorded.get("py")
 
 
+def _is_gitignored(path: Path) -> bool:
+    """True if git would ignore `path`. False when git is unavailable or this is no repo."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", str(path)],
+            cwd=_repo_root(), capture_output=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _warn_gitignored_artifacts(py_files: list[Path]) -> None:
+    """Warn for each declared artifact whose `.ipynb` git would never commit.
+
+    Preserved locally and silently never committed looks identical to the feature not
+    working, so this is worth a line every time. `juplit check` turns it into a failure.
+    """
+    from juplit.artifacts import is_artifact
+
+    root = _repo_root()
+    hidden = [
+        _key(f, root) for f in py_files
+        if is_artifact(f) and _paired_ipynb(f).exists() and _is_gitignored(_paired_ipynb(f))
+    ]
+    if hidden:
+        print(_fmt(
+            "artifact GITIGNORED — outputs are preserved locally but will never be "
+            "committed; un-ignore the .ipynb (e.g. `!experiments/ablation.ipynb`)",
+            hidden,
+        ))
+
+
 # ── Jupytext runner ───────────────────────────────────────────────────────────
 
 def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[str]], list[str]]:
@@ -277,6 +310,20 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     }, errors
 
 
+def _normalize_artifacts(py_files: list[Path]) -> None:
+    """Apply the running-state scrub to every declared artifact notebook on disk."""
+    from juplit.artifacts import is_artifact, normalize, write_artifact
+    import nbformat
+
+    for f in py_files:
+        ipynb = _paired_ipynb(f)
+        if not (is_artifact(f) and ipynb.exists()):
+            continue
+        nb = nbformat.read(ipynb, as_version=4)
+        if normalize(nb):
+            write_artifact(ipynb, nb)
+
+
 # ── Public tasks ─────────────────────────────────────────────────────────────
 
 def sync_notebooks() -> None:
@@ -300,7 +347,9 @@ def sync_notebooks() -> None:
     Raises `SystemExit(1)` if jupytext reports any errors, or if any file was
     overwrite-blocked.
     """
-    files = _find_percent_notebook_py_files()
+    from juplit.artifacts import artifact_py_files
+
+    files = sorted(set(_find_percent_notebook_py_files()) | set(artifact_py_files()))
     if not files:
         print("No percent notebook .py files found.")
         return
@@ -320,7 +369,9 @@ def sync_notebooks() -> None:
     # Blocked files were not synced — keep their prior baseline so the guard
     # keeps firing until the user resolves them; save everything else once.
     risk_keys = set(groups["overwrite_risk"])
+    _normalize_artifacts([f for f in files if _key(f, root) not in risk_keys])
     _save_hashes([f for f in files if _key(f, root) not in risk_keys])
+    _warn_gitignored_artifacts(files)
 
     if groups["to_ipynb"]:
         print(_fmt("synced py → ipynb", groups["to_ipynb"]))
@@ -361,13 +412,27 @@ def generate_notebooks() -> None:
     Prints a summary of created/updated, unchanged, and skipped files.
     Raises `SystemExit(1)` if jupytext reports any errors.
     """
-    files = _find_percent_notebook_py_files()
+    from juplit.artifacts import artifact_py_files, is_artifact
+
+    files = sorted(set(_find_percent_notebook_py_files()) | set(artifact_py_files()))
     if not files:
         print("No percent notebook .py files found.")
         return
 
-    groups, errors = _run_jupytext(["--to", "notebook"], files)
+    # An artifact whose .ipynb already exists is regenerated with --update, which keeps
+    # its outputs; plain --to notebook wipes them, which is the issue #3 data loss.
+    keep_outputs = [f for f in files if is_artifact(f) and _paired_ipynb(f).exists()]
+    plain = [f for f in files if f not in keep_outputs]
+
+    g_plain, e_plain = _run_jupytext(["--to", "notebook"], plain)
+    g_keep, e_keep = _run_jupytext(["--to", "notebook", "--update"], keep_outputs)
+    groups = {k: g_plain[k] + g_keep[k] for k in g_plain}
+    errors = e_plain + e_keep
+    _normalize_artifacts(files)
     _save_hashes(files)
+    if keep_outputs:
+        print(_fmt("nb kept outputs (artifact)", [_key(f, _repo_root()) for f in keep_outputs]))
+    _warn_gitignored_artifacts(files)
     if groups["to_ipynb"]:
         print(_fmt("nb created/updated", groups["to_ipynb"]))
     if groups["unchanged"]:
@@ -382,23 +447,36 @@ def generate_notebooks() -> None:
         raise SystemExit(1)
 
 
-def clean_notebooks() -> None:
-    """Sync then delete all `.ipynb` files from the source directories.
+def clean_notebooks(force: bool = False) -> None:
+    """Sync then delete `.ipynb` files, keeping artifact notebooks unless `force`.
 
     First calls `sync_notebooks()` to flush any unsaved changes from the
     `.ipynb` files back into their paired `.py` sources, then removes every
     `.ipynb` found under `notebook_src_dirs`. Keeps the working directory
     clean for AI agents and CI environments that only need the `.py` sources.
 
-    Prints a summary of removed files.
+    An artifact notebook is the deliverable, not a build product, so it is kept and
+    counted; `force=True` deletes it too.
+
+    Prints a summary of removed and kept files.
     """
+    from juplit.artifacts import artifact_py_files
+
     sync_notebooks()
-    removed = []
-    for src_dir in _get_src_dirs():
-        for f in src_dir.rglob("*.ipynb"):
-            removed.append(f.name)
-            f.unlink()
+    artifacts = {_paired_ipynb(f).resolve() for f in artifact_py_files()}
+    protected = set() if force else artifacts
+    candidates = {f.resolve() for d in _get_src_dirs() for f in d.rglob("*.ipynb")}
+    candidates |= {f for f in artifacts if f.exists()}
+    removed, kept = [], []
+    for f in sorted(candidates):
+        if f in protected:
+            kept.append(f.name)
+            continue
+        removed.append(f.name)
+        f.unlink()
     if removed:
         print(_fmt("clean removed", sorted(removed)))
-    else:
+    if kept:
+        print(_fmt("clean kept artifact notebooks (--force to delete them too)", sorted(kept)))
+    if not removed and not kept:
         print("clean: nothing to remove")

@@ -25,9 +25,13 @@ def nb() -> None:
 
 
 @app.command
-def clean() -> None:
-    """Sync notebooks then delete all .ipynb files (keeps workspace clean for AI agents)."""
-    clean_notebooks()
+def clean(force: bool = False) -> None:
+    """Sync notebooks then delete .ipynb files (keeps workspace clean for AI agents).
+
+    Artifact notebooks are kept, because their outputs are the deliverable. Pass
+    --force to delete those too.
+    """
+    clean_notebooks(force=force)
 
 
 @app.command
