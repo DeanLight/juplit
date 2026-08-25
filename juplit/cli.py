@@ -72,6 +72,50 @@ def html(notebook: str, out: str | None = None) -> None:
 
 
 @app.command
+def kernel(action: str, name: str = "default", cwd: str | None = None,
+           kernel_name: str = "python3") -> None:
+    """Manage the persistent kernel: ACTION is start, stop or status.
+
+    The kernel outlives the command that started it, so separate `juplit try` calls
+    share one session. It runs at the repo root unless --cwd says otherwise, and lives
+    until `juplit kernel stop` or `juplit clean`.
+    """
+    from juplit import kernel as kernel_module
+
+    if action == "start":
+        session = kernel_module.start(name, kernel=kernel_name,
+                                      cwd=Path(cwd) if cwd else None)
+        print(f"kernel {session['name']!r} ready (pid {session['pid']}, cwd {session['cwd']})")
+    elif action == "stop":
+        print(f"kernel {name!r} stopped" if kernel_module.stop(name)
+              else f"no kernel {name!r} to stop")
+    elif action == "status":
+        rows = kernel_module.status()
+        for row in rows:
+            state = "alive" if row["alive"] else "DEAD"
+            print(f"{row['name']:<12} {state:<6} pid {row['pid']:<8} cwd {row['cwd']}")
+        if not rows:
+            print("no kernels")
+    else:
+        raise ValueError(f"unknown action {action!r} — use start, stop or status")
+
+
+@app.command(name="try")
+def try_(code: str | None = None, file: str | None = None, nb: str | None = None,
+         cells: str | None = None, name: str = "default", timeout: float = 300.0) -> None:
+    """Execute on the kernel and print the outputs. NEVER writes to any notebook.
+
+    Give it inline CODE, a --file to run, or --nb with --cells to rehearse cells that
+    are already in a notebook. The attempt leaves no trace on disk, so a failure costs
+    nothing; `juplit add-cell --from-last` is how a successful one gets committed.
+    """
+    from juplit.trying import try_code
+
+    try_code(code=code, file=Path(file) if file else None,
+             nb=Path(nb) if nb else None, cells=cells, name=name, timeout=timeout)
+
+
+@app.command
 def check(strict: bool = False) -> None:
     """Fail if a committed notebook's outputs no longer match the .py that produced them.
 
@@ -158,3 +202,7 @@ def main() -> None:
     except (ValueError, RuntimeError) as error:
         print(f"juplit: {error}", file=sys.stderr)
         raise SystemExit(1) from None
+
+
+if __name__ == "__main__":  # `python -m juplit.cli`, e.g. when the console script is not on PATH
+    main()

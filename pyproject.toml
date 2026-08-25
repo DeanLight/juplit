@@ -8,6 +8,7 @@ dependencies = [
     "jupytext>=1.16.0",
     "cyclopts>=2.0.0",
     "nbformat>=5.10",
+    "jupyter_client>=8.0",
 ]
 
 [project.urls]
@@ -74,3 +75,4 @@ testpaths = ["juplit"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = ["kernel: needs a live Jupyter kernel (skipped without a python3 kernelspec)"]

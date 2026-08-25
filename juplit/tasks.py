@@ -541,6 +541,12 @@ def clean_notebooks(force: bool = False) -> None:
     if not removed and not kept:
         print("clean: nothing to remove")
 
+    from juplit.kernel import stop_all
+
+    stopped = stop_all()
+    if stopped:
+        print(_fmt("clean stopped kernels", stopped))
+
 
 def html(notebook: Path, out_dir: Path | None = None) -> Path:
     """Render a notebook to standalone HTML with `jupyter nbconvert`. Returns the path.
