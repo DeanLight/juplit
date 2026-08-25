@@ -17,16 +17,43 @@ CPython 3.12.3). Transcripts are in **Appendix A**. One finding is new relative 
 ## Changes from the spec's `## Tentative interfaces`
 
 Per Code Design, the sketch is intent, not contract. Adopted as written except for these six.
-Each line is *old shape → new shape → why*.
+Each one gives the old shape, the new shape, and the one-line reason.
 
-| # | Spec sketch | This design | Why |
-|---|---|---|---|
-| 1 | `juplit cells` + a TODO: *"we need to have a view command or a view source etc"* | `juplit cells <nb> [--source] [--cells R]`, no separate `view` | The `.py` is already plain text the agent can read directly; what it cannot get from the file is the **cell index ↔ source** mapping that every other command (`--cells 3-7`, `juplit cell 7`, `rerun --cells`) is addressed by. `cells --source` is that mapping. A second command that prints the source of a file the agent can already `cat` fails the existence gate. |
-| 2 | `juplit run --file /tmp/attempt.py` + TODO: *"add ability to run only some cells"* | `juplit run` gains `--nb <py> --cells 3-7` (execute, print, **write nothing**); `juplit rerun <py> --cells 3-7` is the write-back form | "Run only some cells" splits cleanly in two: rehearse without touching the artifact (`run`), and repair the artifact (`rerun`). `rerun --stale/--all` was already in the sketch; `--cells` is the third selector on the same command rather than a new one. |
-| 3 | Out of scope: *"exporting to standalone HTML"*, then the user TODO reversing it | `juplit html <nb> [--out DIR]` — a ~10-line `subprocess` wrapper around `jupyter nbconvert --to html`, plus a `poe html` target in the template | Per the TODO: the point is **discoverability** — agents read the `[tool.poe.tasks]` table to learn what a repo can do, and `nbconvert` never appears there today. Wrapping it costs no dependency (subprocess, exactly like the existing `jupytext` call) and a clean error when nbconvert is absent. |
-| 4 | *"One new key; nothing else changes"* — `artifact_notebooks` | Three keys: `artifact_notebooks` (required) plus optional `artifact_max_output_bytes` (default 1 MB) and `artifact_max_notebook_bytes` (default 10 MB) | The same spec asks for "size budgets enforced by the same check". A budget nobody can tune is a budget that gets disabled; two optional keys with working defaults keep the zero-config path at one key. |
-| 5 | Provenance record *"which version of its cell's source produced it"* | `cell.metadata.juplit.src_sha256` **only** — no `executed` timestamp | The spec also requires that "re-running and getting the same results produces no diff". A wall-clock stamp guarantees a diff on every re-run, defeating the requirement it sits next to. Source hash alone answers the only question `check` asks. |
-| 6 | Module named `inspect.py` in the earlier parked design | `juplit/view.py` | `juplit/inspect.py` shadows a stdlib module name inside the package; renaming costs nothing and matches the spec's "view" vocabulary. |
+**1. No separate `view` command.**
+
+- *Spec sketch:* `juplit cells`, plus a TODO — "we need to have a view command or a view source etc".
+- *This design:* `juplit cells <nb> [--source] [--cells R]`. No `view`.
+- *Why:* the `.py` is already plain text the agent can read directly. What it cannot get from the file is the **cell index ↔ source** mapping that every other command is addressed by (`--cells 3-7`, `juplit cell 7`, `rerun --cells`), and `cells --source` is exactly that mapping. A second command that prints the source of a file the agent can already `cat` fails the existence gate.
+
+**2. Partial runs split across two commands.**
+
+- *Spec sketch:* `juplit run --file /tmp/attempt.py`, plus a TODO — "add ability to run only some cells".
+- *This design:* `juplit run` gains `--nb <py> --cells 3-7` (execute, print, **write nothing**); `juplit rerun <py> --cells 3-7` is the write-back form.
+- *Why:* "run only some cells" is two different jobs — rehearse without touching the artifact, and repair the artifact. `rerun --stale/--all` was already in the sketch, so `--cells` is a third selector on an existing command rather than new surface.
+
+**3. `juplit html` added.**
+
+- *Spec sketch:* listed under out of scope — "exporting to standalone HTML" — then reversed by your TODO.
+- *This design:* `juplit html <nb> [--out DIR]`, a ~10-line `subprocess` wrapper around `jupyter nbconvert --to html`, plus a `poe html` target in the template.
+- *Why:* per the TODO, the point is **discoverability** — agents read `[tool.poe.tasks]` to learn what a repo can do, and nbconvert never appears there today. Wrapping it costs no dependency (subprocess, exactly like the existing `jupytext` call) and buys a clean error when nbconvert is absent.
+
+**4. Three config keys, not one.**
+
+- *Spec sketch:* "One new key; nothing else changes" — `artifact_notebooks`.
+- *This design:* `artifact_notebooks` (required) plus optional `artifact_max_output_bytes` (default 1 MB) and `artifact_max_notebook_bytes` (default 10 MB).
+- *Why:* the same spec asks for "size budgets enforced by the same check". A budget nobody can tune is a budget that gets disabled; two optional keys with working defaults keep the zero-config path at one key.
+
+**5. No timestamp in the provenance stamp.**
+
+- *Spec sketch:* record "which version of its cell's source produced it".
+- *This design:* `cell.metadata.juplit.src_sha256` only — no `executed` field.
+- *Why:* the spec also requires that "re-running and getting the same results produces no diff". A wall-clock stamp guarantees a diff on every re-run, defeating the requirement it sits next to. The source hash answers the only question `check` asks.
+
+**6. `view.py`, not `inspect.py`.**
+
+- *Spec sketch:* n/a — this was the module name in the earlier parked design.
+- *This design:* `juplit/view.py`.
+- *Why:* `juplit/inspect.py` shadows a stdlib module name inside the package. Renaming costs nothing and matches the spec's own "view" vocabulary.
 
 Everything else — `artifact_notebooks` glob config, `juplit cells / cell / kernel / run /
 commit-cell --from-last / check / rerun / scrub`, `clean --force`, the one-line additions to
@@ -50,29 +77,76 @@ alternative actually evaluated, `datalayer/jupyter-mcp-server`, needs a running 
 plus real-time collaboration (ruled out by the headless constraint: CI, a SLURM login node, an
 ephemeral sandbox), adds 30+ tools to the agent's surface, and does not address staleness at all.
 
-Component by component:
+Component by component. Each answers the three gate questions: **does it need to exist**,
+**is it already solved**, and **what is the smallest form**.
 
-| Component | Needs to exist? | Already solved? | Smallest form |
-|---|---|---|---|
-| Artifact registry (`artifact_notebooks`) | Yes — the opt-in scope; without it this changes default behaviour for everyone | No | Config list + stdlib `fnmatch` on the repo-relative path, ~20 lines |
-| `--update` on the `nb` path | Yes — issue #3's data loss | **Yes, by jupytext** — `--to notebook --update` preserves outputs (A2) | One extra flag in the existing `_run_jupytext` arg list |
-| `clean` skip + `--force` | Yes — deleting the deliverable | No | One filter + one summary line |
-| Per-cell stamp (`src_sha256`) | Yes — the only carrier of provenance that survives a fresh clone (`.sync_hashes.json` is gitignored **and** whole-file, so it can neither run in CI nor drive per-cell repair) | No | `hashlib.sha256` into `cell.metadata`, ~15 lines |
-| `cell_metadata_filter: -juplit` | Yes — without it the stamp is written into the `.py` cell markers and corrupts the source of truth (A3) | Yes, by jupytext — we only have to *set* it | One key in notebook metadata |
-| Staleness check | Yes — the highest-priority item in the spec | No | One comparison per cell |
-| `normalize` (running-state scrub) | Yes — the spec makes it always-on: "what gets cleaned is the bookkeeping of the run" | Partly: `nbconvert`'s `ClearMetadataPreprocessor` does the metadata half, at the cost of a heavyweight dep to replace ~15 lines of dict deletion | ~20 lines of `del` + one `\r` collapse |
-| Detached kernel session | Yes — capability 2; the spec's whole loop rests on it | Partly. `jupyter_client` gives the kernelspec lookup and the client; it does **not** give a kernel that survives the CLI process (A4) | `subprocess.Popen` of the kernelspec argv + a JSON session file, ~70 lines |
-| IOPub → nbformat outputs | Yes — capabilities 3/4 | `nbclient` does it, but pulling a second execution engine (with its own kernel lifecycle, and no cross-invocation persistence) to save ~30 lines of message mapping is a bad trade | `nbformat.v4.new_output` per message type, ~30 lines |
-| Digest read (`cells`/`cell`) | Yes — capability 1; it is the entire token argument | No | Pure `nbformat` walk + string formatting, ~150 lines |
-| `commit-cell` | Yes — capability 4 | No | `jupytext.reads/writes` (byte-stable, A5) + `nbformat` insert, ~60 lines |
-| `rerun` | Yes — the spec's repair path; without it a stale cell can only be fixed by a full re-run, which is the ~20-minute real-money path | No | Reuses `kernel.execute` + the stamp writer, ~50 lines |
-| `stamp` | Yes — the *only* way out of `unverified` for a human-run notebook, which Q1's answer creates | No | `scan` + write stamps, ~20 lines |
-| `html` | Yes — per the spec TODO, for discoverability | **Yes, by nbconvert** — we only shell out to it | ~10 lines of `subprocess`, zero new deps |
-| Size budgets in `check` | Yes — spec, "size budgets enforced by the same check" | No | Two comparisons against `len()`, ~15 lines |
-| Image downscaling / spilling | **No — cut** | — | Spec Q7 and the out-of-scope list both say report-only. No Pillow, no `--spill`. |
-| Notebook scaffolding | **No — cut** | — | Spec out-of-scope: "a template is a file you copy" |
-| `juplit status` | **No — cut** | — | Folded into `kernel status` + `check` |
-| Regex path patterns | **No — cut** | — | Spec Q6: globs only |
+- **Artifact registry (`artifact_notebooks`)**
+  - *Needs to exist:* yes — it is the opt-in scope; without it this changes default behaviour for everyone.
+  - *Already solved:* no.
+  - *Smallest form:* a config list plus stdlib `fnmatch` on the repo-relative path. ~20 lines.
+- **`--update` on the `nb` path**
+  - *Needs to exist:* yes — this is issue #3's data loss.
+  - *Already solved:* **yes, by jupytext** — `--to notebook --update` preserves outputs (A2).
+  - *Smallest form:* one extra flag in the existing `_run_jupytext` arg list.
+- **`clean` skip + `--force`**
+  - *Needs to exist:* yes — otherwise `clean` deletes the deliverable.
+  - *Already solved:* no.
+  - *Smallest form:* one filter and one summary line.
+- **Per-cell stamp (`src_sha256`)**
+  - *Needs to exist:* yes — it is the only carrier of provenance that survives a fresh clone. `.sync_hashes.json` is gitignored **and** whole-file, so it can neither run in CI nor drive per-cell repair.
+  - *Already solved:* no.
+  - *Smallest form:* `hashlib.sha256` into `cell.metadata`. ~15 lines.
+- **`cell_metadata_filter: -juplit`**
+  - *Needs to exist:* yes — without it the stamp is written into the `.py` cell markers and corrupts the source of truth (A3).
+  - *Already solved:* yes, by jupytext — we only have to *set* it.
+  - *Smallest form:* one key in the notebook metadata.
+- **Staleness check**
+  - *Needs to exist:* yes — the highest-priority item in the spec.
+  - *Already solved:* no.
+  - *Smallest form:* one comparison per cell.
+- **`normalize` (the running-state scrub)**
+  - *Needs to exist:* yes — the spec makes it always-on: "what gets cleaned is the bookkeeping of the run".
+  - *Already solved:* partly. `nbconvert`'s `ClearMetadataPreprocessor` does the metadata half, at the cost of a heavyweight dependency to replace ~15 lines of dict deletion.
+  - *Smallest form:* ~20 lines of `del` plus one `\r` collapse.
+- **Detached kernel session**
+  - *Needs to exist:* yes — capability 2; the spec's whole loop rests on it.
+  - *Already solved:* partly. `jupyter_client` gives the kernelspec lookup and the client; it does **not** give a kernel that survives the CLI process (A4).
+  - *Smallest form:* `subprocess.Popen` of the kernelspec argv plus a JSON session file. ~70 lines.
+- **IOPub → nbformat outputs**
+  - *Needs to exist:* yes — capabilities 3 and 4.
+  - *Already solved:* `nbclient` does it, but pulling a second execution engine — with its own kernel lifecycle, and no cross-invocation persistence — to save ~30 lines of message mapping is a bad trade.
+  - *Smallest form:* `nbformat.v4.new_output` per message type. ~30 lines.
+- **Digest read (`cells` / `cell`)**
+  - *Needs to exist:* yes — capability 1, and it is the entire token argument.
+  - *Already solved:* no.
+  - *Smallest form:* a pure `nbformat` walk plus string formatting. ~150 lines.
+- **`commit-cell`**
+  - *Needs to exist:* yes — capability 4.
+  - *Already solved:* no.
+  - *Smallest form:* `jupytext.reads/writes` (byte-stable, A5) plus an `nbformat` insert. ~60 lines.
+- **`rerun`**
+  - *Needs to exist:* yes — the spec's repair path. Without it a stale cell can only be fixed by a full re-run, which is the ~20-minute real-money path.
+  - *Already solved:* no.
+  - *Smallest form:* reuses `kernel.execute` and the stamp writer. ~50 lines.
+- **`stamp`**
+  - *Needs to exist:* yes — the *only* way out of `unverified` for a human-run notebook, which Q1's answer creates.
+  - *Already solved:* no.
+  - *Smallest form:* `scan` plus a stamp write. ~20 lines.
+- **`html`**
+  - *Needs to exist:* yes — per the spec TODO, for discoverability.
+  - *Already solved:* **yes, by nbconvert** — we only shell out to it.
+  - *Smallest form:* ~10 lines of `subprocess`, zero new dependencies.
+- **Size budgets in `check`**
+  - *Needs to exist:* yes — the spec asks for "size budgets enforced by the same check".
+  - *Already solved:* no.
+  - *Smallest form:* two comparisons against `len()`. ~15 lines.
+
+**Cut outright** — four things that did not survive the gate:
+
+- **Image downscaling or spilling to files** — spec Q7 and the out-of-scope list both say report-only. No Pillow, no `--spill`.
+- **Notebook scaffolding** — spec out of scope: "a template is a file you copy".
+- **`juplit status`** — folded into `juplit kernel status` and `juplit check`.
+- **Regex path patterns** — spec Q6: globs only.
 
 ---
 
@@ -448,20 +522,18 @@ def html(py_or_ipynb: Path, out_dir: Path | None = None) -> Path:   # NEW
 
 CLI (`juplit/cli.py`, cyclopts, same `@app.command` shape as today):
 
-| Command | What it does |
-|---|---|
-| `juplit cells <nb> [--source] [--cells R]` | digest index of the notebook — no base64 |
-| `juplit cell <nb> <i> [--full]` | one cell whole |
-| `juplit kernel start\|stop\|status [--name] [--cwd] [--kernel]` | the persistent kernel |
-| `juplit run [CODE] [--file F] [--nb N --cells R] [--name] [--timeout]` | execute, print, write nothing |
-| `juplit commit-cell <nb> [--from-last] [--file F] [--index i] [--markdown]` | insert the accepted cell + its captured outputs |
-| `juplit rerun <nb> [--stale \| --all \| --cells R] [--name]` | re-execute and write back outputs + stamps |
-| `juplit stamp <nb> [--cells R] [--force]` | bless `unverified` outputs |
-| `juplit check [--strict]` | the CI / pre-commit guard; committed files only |
-| `juplit scrub <nb>` | apply the running-state scrub, report sizes |
-| `juplit html <nb> [--out DIR]` | nbconvert wrapper |
-| `juplit clean [--force]` | existing; now keeps artifacts and reaps kernels |
-| `juplit sync`, `juplit nb` | existing; one extra summary line when artifacts are involved |
+- `juplit cells <nb> [--source] [--cells R]` — digest index of the notebook; never any base64.
+- `juplit cell <nb> <i> [--full]` — one cell whole.
+- `juplit kernel start|stop|status [--name] [--cwd] [--kernel]` — the persistent kernel.
+- `juplit run [CODE] [--file F] [--nb N --cells R] [--name] [--timeout]` — execute, print, write nothing.
+- `juplit commit-cell <nb> [--from-last] [--file F] [--index i] [--markdown]` — insert the accepted cell plus its captured outputs.
+- `juplit rerun <nb> [--stale | --all | --cells R] [--name]` — re-execute and write back outputs + stamps.
+- `juplit stamp <nb> [--cells R] [--force]` — bless `unverified` outputs.
+- `juplit check [--strict]` — the CI / pre-commit guard; reads committed files only.
+- `juplit scrub <nb>` — apply the running-state scrub, report sizes.
+- `juplit html <nb> [--out DIR]` — nbconvert wrapper.
+- `juplit clean [--force]` — existing; now keeps artifacts and reaps kernels.
+- `juplit sync`, `juplit nb` — existing; one extra summary line when artifacts are involved.
 
 `--from-last` is the ergonomic core of the loop: `juplit run` caches its snippet and captured
 outputs in `.juplit/last-run.json`, so accepting an attempt is
@@ -609,14 +681,12 @@ ipykernel stays green.
 
 ~3 new source files, ~4 modified, ~3 new test files, ~4 docs/config files.
 
-| Area | Added | Modified |
-|---|---|---|
-| `juplit/artifacts.py`, `kernel.py`, `view.py` | ~650 | — |
-| `juplit/tasks.py`, `cli.py` | ~120 | ~90 |
-| tests | ~520 | — |
-| docs (`docs/artifact_notebooks.py` + `api.md` + `mkdocs.yml`) | ~230 | ~15 |
-| `README.md`, `juplit/SKILL.md` | ~150 | ~10 |
-| `pyproject.toml`, `.gitignore`, `ci.yml` | ~15 | ~5 |
+- `juplit/artifacts.py`, `kernel.py`, `view.py` — **~650 added**.
+- `juplit/tasks.py`, `cli.py` — ~120 added, **~90 modified**.
+- tests (`test_artifacts.py`, `test_kernel.py`, `test_view.py`) — ~520 added.
+- docs (`docs/artifact_notebooks.py`, `api.md`, `mkdocs.yml`) — ~230 added, ~15 modified.
+- `README.md`, `juplit/SKILL.md` — ~150 added, ~10 modified.
+- `pyproject.toml`, `.gitignore`, `ci.yml` — ~15 added, ~5 modified.
 
 **~1 690 added, ~120 modified**, of which **~770 is production code** — against the spec's
 ~560-line estimate. The gap is the three things the spec's estimate predates: `juplit html`
@@ -648,11 +718,13 @@ carried by `SKILL.md`, not by the docs site).
 
 ### 6.2 Page plan
 
-| Page | Diátaxis | Reader need | Source |
-|---|---|---|---|
-| `docs/artifact_notebooks.py` | **Tutorial** | "Take me from a normal juplit repo to a committed, checked, agent-produced experiment notebook, once, end to end" | New |
-| `docs/api.md` | **Reference** | "What exactly does `juplit check` fail on? What are the config keys and their defaults?" | Extended: mkdocstrings for `juplit.artifacts` / `kernel` / `view`, plus a CLI + config table |
-| `README.md` | (not a docs page) | The 20-line version for someone deciding whether to opt in | Extended |
+- **`docs/artifact_notebooks.py`** — **Tutorial**, new.
+  - *Reader need:* "take me from a normal juplit repo to a committed, checked, agent-produced experiment notebook, once, end to end."
+- **`docs/api.md`** — **Reference**, extended.
+  - *Reader need:* "what exactly does `juplit check` fail on, and what are the config keys and their defaults?"
+  - *Carved from:* the existing page — add mkdocstrings for `juplit.artifacts` / `kernel` / `view`, plus the CLI and config surface.
+- **`README.md`** — not a docs page, extended.
+  - *Reader need:* the 20-line version, for someone deciding whether to opt in at all.
 
 One page, one type. No how-to page: there is exactly one task here and the tutorial is it —
 a second page would repeat it with different words.
