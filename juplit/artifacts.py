@@ -13,10 +13,13 @@ outputs — execution counts, per-run timestamps, widget state, carriage-return 
 bars — so re-running and getting the same results produces no diff.
 """
 
+import hashlib
 import tomllib
 from functools import lru_cache
+from typing import Literal
 from pathlib import Path
 
+import jupytext
 import nbformat
 from nbformat import NotebookNode
 
@@ -28,6 +31,8 @@ from juplit.tasks import (
     _repo_root,
 )
 
+STAMP_KEY = "juplit"
+METADATA_FILTER = "-juplit"
 DEFAULT_MAX_OUTPUT_BYTES = 1_000_000
 DEFAULT_MAX_NOTEBOOK_BYTES = 10_000_000
 
@@ -100,6 +105,83 @@ def max_notebook_bytes() -> int:
     return int(_juplit_config().get("artifact_max_notebook_bytes", DEFAULT_MAX_NOTEBOOK_BYTES))
 
 
+# ── Provenance ───────────────────────────────────────────────────────────────
+
+def source_sha(source: str) -> str:
+    """The 16-hex-char sha256 prefix of a cell's source — its provenance stamp.
+
+    No timestamp goes with it: a wall-clock field would churn the diff on every
+    re-execution, and re-running with identical results must produce no diff.
+    """
+    return hashlib.sha256(source.encode()).hexdigest()[:16]
+
+
+def ensure_filter(nb: NotebookNode) -> bool:
+    """Keep the stamp out of the `.py`. True if the notebook changed.
+
+    Load-bearing, not cosmetic: without `cell_metadata_filter: -juplit`, jupytext writes
+    the stamp into the `.py` cell markers on the ipynb → py direction, e.g.
+    `# %% juplit={"src_sha256": "..."}`, which corrupts the source of truth.
+    """
+    jupytext = nb.metadata.setdefault("jupytext", {})
+    if jupytext.get("cell_metadata_filter") == METADATA_FILTER:
+        return False
+    jupytext["cell_metadata_filter"] = METADATA_FILTER
+    return True
+
+
+def ensure_filter_py(py_file: Path) -> bool:
+    """Put the same filter in the `.py` header. True if the file changed.
+
+    Both halves need it, and the `.py` half is the one that bites: on a py → ipynb sync
+    jupytext rebuilds the notebook from the `.py`, and it only knows to carry the
+    existing notebook's `juplit` cell metadata across if the *source* it is reading
+    declares that metadata py-invisible. Without this the stamps are silently dropped by
+    the first `juplit sync` after an edit — reproduced.
+    """
+    nb = jupytext.reads(py_file.read_text(), fmt="py:percent")
+    if not ensure_filter(nb):
+        return False
+    py_file.write_text(jupytext.writes(nb, fmt="py:percent"))
+    return True
+
+
+def stamp_cell(cell: NotebookNode) -> None:
+    """Record which source produced this cell's outputs. A cell with none carries none."""
+    if cell.get("outputs"):
+        cell.metadata[STAMP_KEY] = {"src_sha256": source_sha(cell.source)}
+    else:
+        cell.metadata.pop(STAMP_KEY, None)
+
+
+CellState = Literal["clean", "stale", "unverified", "empty"]
+
+
+def cell_state(cell: NotebookNode) -> CellState:
+    """Provenance verdict for one cell.
+
+    empty       — no outputs; nothing to vouch for.
+    clean       — stamped, and the stamp matches the current source.
+    stale       — stamped, and the stamp disagrees: the outputs describe older source.
+    unverified  — has outputs but no stamp: executed outside juplit (a human in Jupyter).
+    """
+    if cell.cell_type != "code" or not cell.get("outputs"):
+        return "empty"
+    stamp = cell.get("metadata", {}).get(STAMP_KEY, {}).get("src_sha256")
+    if stamp is None:
+        return "unverified"
+    return "clean" if stamp == source_sha(cell.source) else "stale"
+
+
+def scan(ipynb: Path) -> dict[str, list[int]]:
+    """Group an artifact notebook's cell indices by state. Pure read, never writes."""
+    nb = nbformat.read(ipynb, as_version=4)
+    states: dict[str, list[int]] = {"clean": [], "stale": [], "unverified": [], "empty": []}
+    for index, cell in enumerate(nb.cells):
+        states[cell_state(cell)].append(index)
+    return states
+
+
 # ── Running-state hygiene ────────────────────────────────────────────────────
 
 def _collapse_progress_bars(text: str) -> str:
@@ -152,10 +234,12 @@ def normalize(nb: NotebookNode) -> bool:
 
 
 def write_artifact(ipynb: Path, nb: NotebookNode) -> None:
-    """The single write path for an artifact `.ipynb`: normalize, then write.
+    """The single write path for an artifact `.ipynb`: filter, normalize, then write.
 
-    Every mutator in this package goes through here so no caller can forget the scrub.
+    Every mutator in this package goes through here so no caller can forget either the
+    metadata filter or the scrub.
     """
+    ensure_filter(nb)
     normalize(nb)
     nbformat.write(nb, ipynb)
 
@@ -166,3 +250,176 @@ def read_artifact(py_file: Path) -> NotebookNode:
     if not ipynb.exists():
         raise ValueError(f"{ipynb} does not exist — run `juplit nb` first")
     return nbformat.read(ipynb, as_version=4)
+
+
+# ── Guards ───────────────────────────────────────────────────────────────────
+
+def stamp(py_file: Path, cells: list[int] | None = None, force: bool = False) -> list[int]:
+    """Bless outputs juplit did not produce: stamp `unverified` cells as current.
+
+    This is the way out of the `unverified` warning for a human who ran the notebook in
+    Jupyter. Refuses a `stale` cell unless `force` — stamping stale outputs asserts
+    something already known to be false. Returns the indices stamped.
+    """
+    ipynb = _paired_ipynb(py_file)
+    nb = read_artifact(py_file)
+    targets = cells if cells is not None else range(len(nb.cells))
+    stamped = []
+    for index in targets:
+        if index >= len(nb.cells):
+            raise ValueError(f"cell {index} is out of range (0..{len(nb.cells) - 1})")
+        cell = nb.cells[index]
+        state = cell_state(cell)
+        if state == "stale" and not force:
+            raise ValueError(
+                f"cell {index} is STALE; re-execute it, or pass --force to assert "
+                "these outputs are current"
+            )
+        if state in ("unverified", "stale"):
+            stamp_cell(cell)
+            stamped.append(index)
+    if stamped:
+        write_artifact(ipynb, nb)
+    return stamped
+
+
+def normalize_notebook(py_file: Path) -> dict[str, object]:
+    """Scrub a committed artifact on disk and report what it costs.
+
+    The file-level counterpart of `normalize`, which works on an in-memory notebook.
+    Oversized outputs are reported only — never downscaled, never spilled to separate
+    files: a spilled image renders as nothing in GitHub's notebook viewer, which is the
+    one surface where reviewers actually read these notebooks.
+    """
+    ipynb = _paired_ipynb(py_file)
+    nb = read_artifact(py_file)
+    changed = normalize(nb) | ensure_filter(nb)
+    if changed:
+        write_artifact(ipynb, nb)
+    return {
+        "changed": changed,
+        "bytes": ipynb.stat().st_size,
+        "oversized": _oversized_outputs(nb),
+    }
+
+
+def _output_bytes(output: NotebookNode) -> int:
+    """Rough on-disk size of one output — the payload, not the JSON scaffolding."""
+    if output.get("output_type") == "stream":
+        return len(output.get("text", ""))
+    if output.get("output_type") == "error":
+        return sum(len(line) for line in output.get("traceback", []))
+    return sum(len(value) if isinstance(value, str) else len(str(value))
+               for value in output.get("data", {}).values())
+
+
+def _oversized_outputs(nb: NotebookNode) -> list[tuple[int, int]]:
+    """(cell index, bytes) for every output over the per-output budget."""
+    cap = max_output_bytes()
+    return [
+        (index, _output_bytes(output))
+        for index, cell in enumerate(nb.cells)
+        for output in cell.get("outputs", [])
+        if _output_bytes(output) > cap
+    ]
+
+
+def check_artifacts(strict: bool = False) -> None:
+    """The pre-commit / CI guard. Reads committed files only — no kernel, no sidecar.
+
+    Fails on: a stale cell, a missing metadata filter, a declared artifact with no
+    committed `.ipynb`, a gitignored artifact, and a notebook or single output over
+    budget. Warns on `unverified` cells; `strict` promotes that warning to a failure.
+
+    Raises `SystemExit(1)` when anything failed.
+    """
+    from juplit.tasks import _is_gitignored, _key
+
+    py_files = artifact_py_files()
+    if not py_files:
+        print("check: no artifact notebooks configured")
+        return
+
+    root, failures, warnings = _repo_root(), [], []
+    for py_file in py_files:
+        name = _key(py_file, root)
+        ipynb = _paired_ipynb(py_file)
+        if not ipynb.exists():
+            failures.append(f"{name}: no committed .ipynb — run `juplit nb`")
+            continue
+        if _is_gitignored(ipynb):
+            failures.append(
+                f"{name}: its .ipynb is gitignored, so the outputs will never be "
+                f"committed — un-ignore it (`!{_key(ipynb, root)}`)"
+            )
+        nb = nbformat.read(ipynb, as_version=4)
+        try:
+            nbformat.validate(nb)
+        except nbformat.ValidationError as invalid:
+            # GitHub's rich notebook diff refuses to render a notebook that fails the
+            # schema, so an artifact that does not validate is not reviewable.
+            failures.append(f"{name}: .ipynb fails nbformat validation — {invalid.message}")
+        py_nb = jupytext.reads(py_file.read_text(), fmt="py:percent")
+        for half, node in ((name, py_nb), (_key(ipynb, root), nb)):
+            if node.metadata.get("jupytext", {}).get("cell_metadata_filter") != METADATA_FILTER:
+                failures.append(
+                    f"{half}: missing `cell_metadata_filter: {METADATA_FILTER}` — "
+                    "provenance stamps leak into the .py without it, and the next sync "
+                    "drops them; run `juplit normalize`"
+                )
+        drift = _source_drift(py_nb, nb)
+        if drift is not None:
+            failures.append(
+                f"{name}: the .py and its .ipynb disagree at cell {drift} — the "
+                "committed notebook does not show the committed code (run `juplit sync`)"
+            )
+        states = scan(ipynb)
+        if states["stale"]:
+            failures.append(
+                f"{name}: cells {_indices(states['stale'])} STALE — outputs predate the "
+                f"current .py (`juplit run {name} --stale`, or revert the source edit)"
+            )
+        if states["unverified"]:
+            warnings.append(
+                f"{name}: cells {_indices(states['unverified'])} unverified — outputs "
+                f"juplit did not produce (`juplit stamp {name}` to vouch for them)"
+            )
+        size = ipynb.stat().st_size
+        if size > max_notebook_bytes():
+            failures.append(
+                f"{name}: {size:,} bytes exceeds the {max_notebook_bytes():,}-byte "
+                "notebook budget"
+            )
+        for index, output_size in _oversized_outputs(nb):
+            failures.append(
+                f"{name}: cell {index} has a {output_size:,}-byte output, over the "
+                f"{max_output_bytes():,}-byte budget"
+            )
+
+    for warning in warnings:
+        print(f"check WARNING {warning}")
+    for failure in failures:
+        print(f"check FAIL {failure}")
+    if failures or (strict and warnings):
+        raise SystemExit(1)
+    print(f"check: {len(py_files)} artifact notebook(s) OK")
+
+
+def _source_drift(py_nb: NotebookNode, ipynb_nb: NotebookNode) -> int | None:
+    """The first cell index where the two halves disagree on source, or None.
+
+    A `.py` edit committed without syncing leaves an internally consistent notebook —
+    old source, old outputs, matching stamp — that nonetheless does not show the code
+    that was committed. Comparing the halves is what lets `check` catch that on a fresh
+    clone, where there is no sync state to consult.
+    """
+    for index, (a, b) in enumerate(zip(py_nb.cells, ipynb_nb.cells)):
+        if a.source.strip() != b.source.strip():
+            return index
+    if len(py_nb.cells) != len(ipynb_nb.cells):
+        return min(len(py_nb.cells), len(ipynb_nb.cells))
+    return None
+
+
+def _indices(values: list[int]) -> str:
+    return ",".join(str(v) for v in values)

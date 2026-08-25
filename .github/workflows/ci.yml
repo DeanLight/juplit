@@ -16,3 +16,4 @@ jobs:
           enable-caching: true
       - run: uv sync --all-groups
       - run: uv run pytest
+      - run: uv run juplit check

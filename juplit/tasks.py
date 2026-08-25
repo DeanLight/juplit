@@ -310,18 +310,74 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     }, errors
 
 
+def _prepare_artifacts(py_files: list[Path]) -> None:
+    """Make sure every artifact `.py` declares the metadata filter before jupytext runs.
+
+    Order matters: jupytext carries a notebook's `juplit` cell metadata across a
+    py → ipynb conversion only when the `.py` it reads declares that metadata
+    py-invisible. Adding the filter *after* the conversion is too late — the stamps are
+    already gone, and every cell comes back `unverified`.
+    """
+    from juplit.artifacts import ensure_filter_py, is_artifact
+
+    for f in py_files:
+        if is_artifact(f):
+            ensure_filter_py(f)
+
+
 def _normalize_artifacts(py_files: list[Path]) -> None:
-    """Apply the running-state scrub to every declared artifact notebook on disk."""
-    from juplit.artifacts import is_artifact, normalize, write_artifact
+    """Scrub the running state from every declared artifact notebook on disk."""
     import nbformat
 
+    from juplit.artifacts import (
+        ensure_filter,
+        ensure_filter_py,
+        is_artifact,
+        normalize,
+        write_artifact,
+    )
+
+    for f in py_files:
+        if not is_artifact(f):
+            continue
+        ensure_filter_py(f)
+        ipynb = _paired_ipynb(f)
+        if not ipynb.exists():
+            continue
+        nb = nbformat.read(ipynb, as_version=4)
+        if normalize(nb) | ensure_filter(nb):
+            write_artifact(ipynb, nb)
+
+
+def _report_stale_artifacts(py_files: list[Path]) -> bool:
+    """Name every artifact cell whose outputs predate its source. True if any is stale.
+
+    Stale outputs are never deleted here: they are the expensive evidence, and the human
+    decides between re-running and reverting the source edit.
+    """
+    from juplit.artifacts import is_artifact, scan
+
+    root, stale_found = _repo_root(), False
     for f in py_files:
         ipynb = _paired_ipynb(f)
         if not (is_artifact(f) and ipynb.exists()):
             continue
-        nb = nbformat.read(ipynb, as_version=4)
-        if normalize(nb):
-            write_artifact(ipynb, nb)
+        states = scan(ipynb)
+        name = _key(f, root)
+        if states["stale"]:
+            stale_found = True
+            cells = ",".join(str(i) for i in states["stale"])
+            print(
+                f"artifact STALE: {name} cells {cells} — outputs predate the current "
+                f".py (`juplit run {name} --stale`, or revert the source edit)"
+            )
+        if states["unverified"]:
+            cells = ",".join(str(i) for i in states["unverified"])
+            print(
+                f"artifact unverified: {name} cells {cells} — outputs juplit did not "
+                f"produce (`juplit stamp {name}` to vouch for them)"
+            )
+    return stale_found
 
 
 # ── Public tasks ─────────────────────────────────────────────────────────────
@@ -354,6 +410,7 @@ def sync_notebooks() -> None:
         print("No percent notebook .py files found.")
         return
 
+    _prepare_artifacts(files)
     prev = _load_hashes()
     root = _repo_root()
     guarded = [f for f in files if _py_edited_since_sync(f, root, prev)]
@@ -398,7 +455,8 @@ def sync_notebooks() -> None:
         print("Sync: nothing to do")
     for err in errors:
         print(f"sync error: {err}")
-    if errors or groups["overwrite_risk"]:
+    stale = _report_stale_artifacts(files)
+    if errors or groups["overwrite_risk"] or stale:
         raise SystemExit(1)
 
 
@@ -421,6 +479,7 @@ def generate_notebooks() -> None:
 
     # An artifact whose .ipynb already exists is regenerated with --update, which keeps
     # its outputs; plain --to notebook wipes them, which is the issue #3 data loss.
+    _prepare_artifacts(files)
     keep_outputs = [f for f in files if is_artifact(f) and _paired_ipynb(f).exists()]
     plain = [f for f in files if f not in keep_outputs]
 
@@ -443,7 +502,8 @@ def generate_notebooks() -> None:
         print("Notebooks: nothing to do")
     for err in errors:
         print(f"nb error: {err}")
-    if errors:
+    stale = _report_stale_artifacts(files)
+    if errors or stale:
         raise SystemExit(1)
 
 
