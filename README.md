@@ -27,6 +27,56 @@ juplit clean   # sync then delete all .ipynb files (before AI agent sessions)
 juplit skill   # print the Claude Code skill file for juplit
 ```
 
+## Artifact notebooks
+
+Some notebooks exist for their outputs — an analysis run against a live endpoint, where
+the plots and tables are the deliverable and nobody will re-run it to review it. Declare
+those pairs and juplit stops treating the `.ipynb` as disposable:
+
+```toml
+[tool.juplit]
+artifact_notebooks = ["experiments/**/*.py"]   # .ipynb committed WITH its outputs
+```
+
+```gitignore
+!experiments/ablation.ipynb   # un-ignore it, or the outputs are never committed
+```
+
+For a declared pair, `nb` and `sync` keep the outputs, and `clean` keeps the file
+(`--force` deletes it anyway). Every cell juplit executes records which version of its
+source produced its outputs, so a cell whose code has moved on is reported and blocked
+rather than passing silently:
+
+```bash
+juplit check          # pre-commit / CI: reads committed files only, no kernel needed
+juplit run nb.py --stale    # re-execute just the cells that drifted
+```
+
+Committed does not mean untouched: execution counts, per-run timestamps and progress-bar
+spam are stripped on every write, so re-running with the same results produces no diff.
+
+## The execution loop
+
+juplit can hold a Jupyter kernel alive *between* CLI calls, with no Jupyter server — so
+an agent (or you) can try a cell, look at the result, and commit only the version that
+worked:
+
+```bash
+juplit cells experiments/ablation.py     # index: one line per cell, digests, no base64
+juplit view  experiments/ablation.py 3-7 # just those cells, with their outputs
+
+juplit kernel start
+juplit try 'df.groupby("arm").score.mean()'      # prints; writes nothing
+juplit add-cell experiments/ablation.py --from-last   # the snippet + the outputs you saw
+
+juplit html experiments/ablation.py      # standalone page for a non-Python reader
+```
+
+**`try` never writes. `run` always writes.** That is the whole safety rule.
+
+See the [artifact notebooks tutorial](https://deanlight.github.io/juplit/artifact_notebooks/)
+for the full walkthrough.
+
 ## Project setup (pyproject.toml)
 
 For a new project, use the [cookiecutter template](https://github.com/DeanLight/juplit_template)

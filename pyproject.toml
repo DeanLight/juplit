@@ -46,6 +46,8 @@ sync         = {script = "juplit.tasks:sync_notebooks", help = "Sync .py<->ipynb
 nb           = {script = "juplit.tasks:generate_notebooks", help = "Generate .ipynb from .py files (run after cloning)"}
 clean        = {script = "juplit.tasks:clean_notebooks", help = "Sync then delete all .ipynb files"}
 test         = {cmd = "pytest", help = "Run tests"}
+check        = {cmd = "juplit check", help = "Fail if a committed notebook's outputs contradict its .py"}
+html         = {cmd = "juplit html", help = "Render a notebook to standalone HTML (nbconvert)"}
 docs         = {sequence = [{ref = "nb"}, {cmd = "mkdocs serve"}], help = "Generate notebooks then serve docs locally for preview"}
 docs-build   = {sequence = [{ref = "nb"}, {cmd = "mkdocs build"}], help = "Generate notebooks then build docs site"}
 docs-deploy  = {sequence = [{ref = "nb"}, {cmd = "mkdocs gh-deploy --force"}], help = "Generate notebooks then deploy docs to GitHub Pages"}
@@ -66,6 +68,8 @@ args = [{name = "env_name", positional = true}]
 
 [tool.juplit]
 notebook_src_dirs = ["juplit", "docs"]
+# juplit dogfoods its own feature: this page is committed with its outputs.
+artifact_notebooks = ["docs/artifact_notebooks.py"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"

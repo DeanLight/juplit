@@ -3,6 +3,7 @@ juplit/**/*.ipynb
 juplit/*.ipynb
 docs/**/*.ipynb
 docs/*.ipynb
+!docs/artifact_notebooks.ipynb
 .sync_hashes.json
 .juplit/
 .ipynb_checkpoints/

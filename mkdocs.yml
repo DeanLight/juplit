@@ -58,5 +58,6 @@ plugins:
 nav:
   - Home: index.md
   - Getting Started: using_juplit.ipynb
+  - Artifact notebooks: artifact_notebooks.ipynb
   - Migrating from nbdev: migrate_from_nbdev.md
   - API Reference: api.md

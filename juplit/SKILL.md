@@ -171,6 +171,64 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 ```
 
+## Artifact notebooks: when the outputs are the deliverable
+
+Default juplit: the `.py` is the source of truth, the `.ipynb` is disposable and
+gitignored. That is wrong for one case — a notebook whose executed outputs *are* the
+deliverable (an experiment run against a live endpoint, where the logs are too large for
+a human to read). Those pairs are declared by glob:
+
+```toml
+[tool.juplit]
+artifact_notebooks = ["experiments/**/*.py"]
+```
+
+```gitignore
+!experiments/ablation.ipynb   # both halves are committed
+```
+
+What changes for a declared pair:
+
+- `juplit nb` and `juplit sync` keep the outputs instead of wiping them; `juplit clean`
+  keeps the file (`--force` deletes it).
+- Every cell juplit executes is stamped with the sha of the source that produced its
+  outputs. Edit the code and the cell is **STALE**: named, and blocking, on `sync`, `nb`
+  and `juplit check`. Stale outputs are never deleted for you — they cost real money.
+- `juplit check` reads committed files only, so it works in CI and pre-commit.
+- Outputs a human produced in Jupyter are `unverified` — a warning. `juplit stamp <nb>`
+  vouches for them.
+- The `.py` never carries outputs or stamps. It stays reviewable and diffable.
+
+## The execution loop
+
+Two rules, and they are the ones to remember:
+
+1. **`try` never writes. `run` always writes.**
+2. **Never read a raw `.ipynb` into context** — that is megabytes of base64. Use
+   `juplit cells` and `juplit view`.
+3. **Never add a cell whose output you have not seen** — use `--from-last`.
+
+```bash
+juplit cells experiments/ablation.py       # the index: one line per cell + output digests
+juplit view experiments/ablation.py 3-7    # the read: those cells' source and outputs
+
+juplit kernel start                        # a kernel that outlives each CLI call
+juplit try 'df.groupby("arm").score.mean()'          # prints the result, writes nothing
+juplit try --file /tmp/attempt.py                    # or a whole file
+juplit try --nb experiments/ablation.py --cells 3-7  # rehearse cells already in the notebook
+
+juplit add-cell experiments/ablation.py --from-last  # commit the snippet + outputs just seen
+juplit run experiments/ablation.py --stale           # re-execute the drifted cells and save
+juplit run experiments/ablation.py --all             # clean build: restart kernel, run all
+juplit kernel stop                                   # or `juplit clean`, which reaps kernels
+```
+
+`juplit run` requires one of `--stale`, `--all` or `--cells` — there is no default,
+because the plausible default re-runs everything.
+
+Other commands: `juplit stamp <nb>` (vouch for a human's outputs), `juplit normalize <nb>`
+(strip running state from a hand-edited notebook), `juplit html <nb>` (standalone HTML).
+
 ## Key conventions
 
 - **Edit `.py` files only** — `.ipynb` is generated, never manually edited
