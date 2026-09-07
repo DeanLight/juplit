@@ -526,11 +526,13 @@ wheels = [
 
 [[package]]
 name = "juplit"
-version = "0.0.6"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cyclopts" },
+    { name = "jupyter-client" },
     { name = "jupytext" },
+    { name = "nbformat" },
 ]
 
 [package.dev-dependencies]
@@ -548,7 +550,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cyclopts", specifier = ">=2.0.0" },
+    { name = "jupyter-client", specifier = ">=8.0" },
     { name = "jupytext", specifier = ">=1.16.0" },
+    { name = "nbformat", specifier = ">=5.10" },
 ]
 
 [package.metadata.requires-dev]
