@@ -4,6 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import jupytext
 import nbformat
 import pytest
 from nbformat.v4 import new_code_cell, new_notebook, new_output
@@ -13,6 +14,8 @@ from juplit.artifacts import (
     cell_state,
     check_artifacts,
     ensure_filter,
+    has_filter,
+    with_filter,
     normalize_notebook,
     scan,
     source_sha,
@@ -35,6 +38,18 @@ print(x)
 
 # %%
 y = "unchanged cell"
+"""
+
+TAGGED = """\
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+# ---
+
+# %% tags=["hide_cell"]
+x = 40 + 2
+print(x)
 """
 
 
@@ -158,6 +173,38 @@ def test_check_passes_on_a_clean_artifact(tmp_path, monkeypatch, capsys):
     _clean_artifact(tmp_path, monkeypatch)
     check_artifacts()
     assert "1 artifact notebook(s) OK" in capsys.readouterr().out
+
+
+def test_a_tagged_cell_does_not_defeat_the_filter(tmp_path, monkeypatch, capsys):
+    """jupytext writes its own entries into the filter; ours has to survive next to them.
+
+    A page that hides a setup cell reads back as `tags,-juplit`, which is correct and not
+    ours to flatten — checking for equality failed every such notebook forever.
+    """
+    _, exp = _make_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (exp / "e.py").write_text(TAGGED)
+    generate_notebooks()
+    _execute_and_stamp(exp / "e.ipynb")
+
+    check_artifacts()
+    assert "1 artifact notebook(s) OK" in capsys.readouterr().out
+
+    py_nb = jupytext.reads((exp / "e.py").read_text(), fmt="py:percent")
+    assert "tags" in py_nb.metadata["jupytext"]["cell_metadata_filter"]
+    assert nbformat.read(exp / "e.ipynb", as_version=4).cells[0].metadata["tags"] == ["hide_cell"]
+
+
+def test_filter_predicates_read_an_entry_not_a_word():
+    assert has_filter("-juplit") and has_filter("tags,-juplit") and has_filter("-juplit,tags")
+    assert not has_filter("tags") and not has_filter(None) and not has_filter("")
+    assert with_filter("tags") == "tags,-juplit"
+    assert with_filter(None) == "-juplit"
+
+    nb = new_notebook(metadata={"jupytext": {"cell_metadata_filter": "tags"}})
+    assert ensure_filter(nb) is True
+    assert nb.metadata["jupytext"]["cell_metadata_filter"] == "tags,-juplit"
+    assert ensure_filter(nb) is False          # idempotent, and nothing dropped
 
 
 def test_check_fails_on_stale_missing_filter_and_missing_notebook(tmp_path, monkeypatch, capsys):

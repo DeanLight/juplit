@@ -116,17 +116,39 @@ def source_sha(source: str) -> str:
     return hashlib.sha256(source.encode()).hexdigest()[:16]
 
 
+def has_filter(value: str | None) -> bool:
+    """True if `-juplit` is one of this filter's entries.
+
+    The filter is a list, not a word: jupytext both accepts and *writes back* entries of
+    its own — a notebook with tagged cells reads as `tags,-juplit`. Asking whether our
+    entry is in it is the only question that has a stable answer.
+    """
+    return METADATA_FILTER in [part.strip() for part in (value or "").split(",")]
+
+
+def with_filter(value: str | None) -> str:
+    """`value` plus our entry, keeping everything it already preserves."""
+    parts = [part.strip() for part in (value or "").split(",") if part.strip()]
+    return ",".join([*parts, METADATA_FILTER])
+
+
 def ensure_filter(nb: NotebookNode) -> bool:
     """Keep the stamp out of the `.py`. True if the notebook changed.
 
     Load-bearing, not cosmetic: without `cell_metadata_filter: -juplit`, jupytext writes
     the stamp into the `.py` cell markers on the ipynb → py direction, e.g.
     `# %% juplit={"src_sha256": "..."}`, which corrupts the source of truth.
+
+    Added to whatever filter is already there rather than over it. jupytext happens to
+    re-derive its own entries on the next read, so clobbering them loses nothing today —
+    but then the value juplit wrote is never the value juplit reads back, which is the
+    confusion `has_filter` exists to end. Writing what we mean keeps `changed` honest too.
     """
     jupytext = nb.metadata.setdefault("jupytext", {})
-    if jupytext.get("cell_metadata_filter") == METADATA_FILTER:
+    current = jupytext.get("cell_metadata_filter")
+    if has_filter(current):
         return False
-    jupytext["cell_metadata_filter"] = METADATA_FILTER
+    jupytext["cell_metadata_filter"] = with_filter(current)
     return True
 
 
@@ -188,11 +210,18 @@ def _collapse_progress_bars(text: str) -> str:
     """Keep only what a terminal would show: the last segment of each `\\r`-split line.
 
     A tqdm bar redrawn 400 times is one line on screen and 400 in the committed file.
+
+    `\\r\\n` is a line ending, not a redraw, and has to go first: a shell cell's output
+    arrives that way — IPython runs `!cmd` through a pty — so splitting it on `\\r` would
+    take every line's content for the empty string after it and commit a notebook of
+    blank lines.
     """
     if "\r" not in text:
         return text
-    lines = [line.split("\r")[-1] for line in text.split("\n")]
-    return "\n".join(lines)
+    text = text.replace("\r\n", "\n")
+    if "\r" not in text:
+        return text
+    return "\n".join(line.split("\r")[-1] for line in text.split("\n"))
 
 
 def normalize(nb: NotebookNode) -> bool:
@@ -361,7 +390,7 @@ def check_artifacts(strict: bool = False) -> None:
             failures.append(f"{name}: .ipynb fails nbformat validation — {invalid.message}")
         py_nb = jupytext.reads(py_file.read_text(), fmt="py:percent")
         for half, node in ((name, py_nb), (_key(ipynb, root), nb)):
-            if node.metadata.get("jupytext", {}).get("cell_metadata_filter") != METADATA_FILTER:
+            if not has_filter(node.metadata.get("jupytext", {}).get("cell_metadata_filter")):
                 failures.append(
                     f"{half}: missing `cell_metadata_filter: {METADATA_FILTER}` — "
                     "provenance stamps leak into the .py without it, and the next sync "
