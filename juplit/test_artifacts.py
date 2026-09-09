@@ -123,6 +123,27 @@ def test_normalize_collapses_progress_bar_spam():
     assert nb.cells[0].outputs[0]["text"] == "100%\ndone\n"
 
 
+def test_normalize_keeps_crlf_output_that_a_shell_cell_produces():
+    """`\r\n` ends a line; it does not redraw one.
+
+    IPython runs `!cmd` through a pty, so every shell cell in a notebook comes back
+    CRLF — and taking the text after each `\r` committed a page of blank lines.
+    """
+    nb = new_notebook(cells=[new_code_cell("!echo hi", outputs=[
+        new_output("stream", name="stdout", text="hi\r\nthere\r\n")])])
+    normalize(nb)
+    assert nb.cells[0].outputs[0]["text"] == "hi\nthere\n"
+
+
+def test_normalize_still_collapses_a_bar_that_ends_in_crlf():
+    """A real redraw survives the CRLF rule: the `\r`s inside the line still collapse."""
+    text = "".join(f"\r{i}%" for i in range(0, 101, 10)) + "\r\ndone\r\n"
+    nb = new_notebook(cells=[new_code_cell("fit()", outputs=[
+        new_output("stream", name="stdout", text=text)])])
+    normalize(nb)
+    assert nb.cells[0].outputs[0]["text"] == "100%\ndone\n"
+
+
 def test_write_artifact_normalizes_on_the_way_out(tmp_path):
     nb = new_notebook(cells=[new_code_cell("x", outputs=[
         new_output("stream", name="stdout", text="1\n")], execution_count=3)])

@@ -210,11 +210,18 @@ def _collapse_progress_bars(text: str) -> str:
     """Keep only what a terminal would show: the last segment of each `\\r`-split line.
 
     A tqdm bar redrawn 400 times is one line on screen and 400 in the committed file.
+
+    `\\r\\n` is a line ending, not a redraw, and has to go first: a shell cell's output
+    arrives that way — IPython runs `!cmd` through a pty — so splitting it on `\\r` would
+    take every line's content for the empty string after it and commit a notebook of
+    blank lines.
     """
     if "\r" not in text:
         return text
-    lines = [line.split("\r")[-1] for line in text.split("\n")]
-    return "\n".join(lines)
+    text = text.replace("\r\n", "\n")
+    if "\r" not in text:
+        return text
+    return "\n".join(line.split("\r")[-1] for line in text.split("\n"))
 
 
 def normalize(nb: NotebookNode) -> bool:
