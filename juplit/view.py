@@ -24,13 +24,20 @@ def parse_cell_range(spec: str) -> list[int]:
     indices: set[int] = set()
     for part in spec.split(","):
         part = part.strip()
-        if "-" in part:
-            start, end = (int(x) for x in part.split("-", 1))
-            if end < start:
-                raise ValueError(f"invalid cell range {part!r}: {end} is before {start}")
-            indices.update(range(start, end + 1))
-        else:
-            indices.add(int(part))
+        try:
+            if "-" in part:
+                start, end = (int(x) for x in part.split("-", 1))
+                if end < start:
+                    raise ValueError(f"invalid cell range {part!r}: {end} is before {start}")
+                indices.update(range(start, end + 1))
+            else:
+                indices.add(int(part))
+        except ValueError as error:
+            if str(error).startswith("invalid cell range"):
+                raise
+            raise ValueError(
+                f"invalid cell range {spec!r}: cells are numbers — 3, 3-7 or 1,4,9-11"
+            ) from None
     return sorted(indices)
 
 

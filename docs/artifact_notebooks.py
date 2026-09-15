@@ -131,7 +131,11 @@ sh("juplit nb")
 # produced into the `.ipynb`.
 #
 # `--all` is the clean build: restart the kernel, run everything top to bottom. `run`
-# always needs a selector, because the plausible default is the expensive one.
+# always needs a selector, because the plausible default is the expensive one. The
+# restart keeps the kernel where it was started — a `kernel start --cwd data/` survives
+# it — so a notebook's relative paths mean the same thing under `--all` as under
+# `--cells`. With no kernel session recorded, `--all` starts one at the repo root and
+# prints `running from <dir>` rather than relocating the run silently.
 
 # %%
 sh("juplit kernel start")

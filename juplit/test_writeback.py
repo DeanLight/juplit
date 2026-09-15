@@ -187,3 +187,43 @@ def test_run_refuses_a_markdown_cell(artifact):
     last = len(nbformat.read(ipynb, as_version=4).cells) - 1
     with pytest.raises(ValueError, match="markdown"):
         run_cells(py, cells=[last])
+
+
+def test_run_all_keeps_the_kernel_where_it_was_started(artifact):
+    """The regression guard for the defect: `--all` restarts the kernel, not relocates it.
+
+    A kernel deliberately started in `experiments/` used to come back at the repo root,
+    so every relative path in the notebook resolved somewhere else.
+    """
+    py, ipynb = artifact
+    _seed_two_cells(py, ipynb)
+    elsewhere = py.parent.resolve()
+    kernel_module.start(cwd=elsewhere)
+    nb = nbformat.read(ipynb, as_version=4)
+    nb.cells[1].source = "import os; print(os.getcwd())"
+    nbformat.write(nb, ipynb)
+
+    report = run_cells(py, all_cells=True)
+
+    assert report["fell_back_to"] is None
+    printed = nbformat.read(ipynb, as_version=4).cells[1].outputs[0]["text"].strip()
+    assert Path(printed) == elsewhere
+    assert kernel_module.read_session("default")["cwd"] == str(elsewhere)
+
+
+def test_run_all_with_no_recorded_session_says_where_it_fell_back_to(artifact, capsys):
+    """Q2(b): the quiet fallback to the repo root is the thing that hid this bug."""
+    from juplit.cli import app
+    from juplit.tasks import _repo_root
+
+    py, ipynb = artifact
+    _seed_two_cells(py, ipynb)
+    assert kernel_module.read_session("default") is None       # nothing to carry a cwd from
+
+    with pytest.raises(SystemExit) as exit_info:               # cyclopts exits on success
+        app(["run", str(py), "--all"])
+
+    assert exit_info.value.code in (0, None)
+    out = capsys.readouterr().out
+    assert f"running from {_repo_root()}" in out
+    assert "ran cells" in out

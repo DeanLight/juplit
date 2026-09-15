@@ -514,15 +514,22 @@ def add_cell(py_file: Path, source: str, outputs: list[NotebookNode],
 
 def run_cells(py_file: Path, cells: list[int] | None = None, stale_only: bool = False,
               all_cells: bool = False, name: str = "default",
-              timeout: float = 300.0) -> dict[str, list[int]]:
+              timeout: float = 300.0) -> dict[str, object]:
     """Execute selected cells and SAVE their outputs, freshly stamped, into the `.ipynb`.
 
     Exactly one selector, and one is required: there is no default because the plausible
     default — re-running everything — is the expensive one. `all_cells` is the clean
     build: the kernel is restarted first so the run starts from nothing.
 
-    Returns {"executed": [...], "failed": [...]}; a cell whose output is an error counts
-    as failed but is still written, because that error is what the notebook now shows.
+    **The restart does not relocate the kernel.** A kernel started with `--cwd` comes back
+    in that directory, so a notebook's relative paths mean the same thing under `--all` as
+    under `--cells`. With no session on disk to read, the new kernel lands at the repo
+    root — as it always did — and `"fell_back_to"` names that directory so a relocated run
+    is visible rather than silent.
+
+    Returns {"executed": [...], "failed": [...], "fell_back_to": str | None}; a cell whose
+    output is an error counts as failed but is still written, because that error is what
+    the notebook now shows.
     """
     from juplit import kernel as kernel_module   # lazy: `sync` and `check` never pay for it
     from juplit.tasks import _save_hashes
@@ -536,12 +543,18 @@ def run_cells(py_file: Path, cells: list[int] | None = None, stale_only: bool = 
 
     ipynb = _paired_ipynb(py_file)
     nb = read_artifact(py_file)
+    fell_back_to = None
     if stale_only:
         targets = scan(ipynb)["stale"]
     elif all_cells:
         targets = [i for i, cell in enumerate(nb.cells) if cell.cell_type == "code"]
+        previous = kernel_module.read_session(name)   # before stop(): it unlinks the record
         kernel_module.stop(name)
-        kernel_module.start(name)
+        restarted = kernel_module.start(
+            name, cwd=Path(previous["cwd"]) if previous else None
+        )
+        if previous is None:
+            fell_back_to = restarted["cwd"]
     else:
         targets = cells
 
@@ -561,4 +574,4 @@ def run_cells(py_file: Path, cells: list[int] | None = None, stale_only: bool = 
     if executed:
         write_artifact(ipynb, nb)
         _save_hashes([py_file])
-    return {"executed": executed, "failed": failed}
+    return {"executed": executed, "failed": failed, "fell_back_to": fell_back_to}

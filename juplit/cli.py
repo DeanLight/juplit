@@ -57,10 +57,9 @@ def view(notebook: str, cells: str | None = None, full: bool = False) -> None:
     are truncated head-and-tail, and images are always shown as a digest — --full lifts
     the text truncation, never the image rule.
     """
-    from juplit.view import parse_cell_range, view_cells
+    from juplit.view import view_cells
 
-    indices = parse_cell_range(cells) if cells else None
-    print(view_cells(_source_file(notebook), cells=indices, full=full))
+    print(view_cells(_source_file(notebook), cells=_cell_range(cells), full=full))
 
 
 @app.command
@@ -148,13 +147,17 @@ def run(notebook: str, cells: str | None = None, stale: bool = False, all: bool 
     Pass exactly one selector: --cells 3-7, --stale to repair just the cells whose
     outputs no longer match their source, or --all for the clean build (restarts the
     kernel and runs everything). There is no default — the plausible one is expensive.
+
+    --all restarts the kernel in the directory it was started in, so a `kernel start
+    --cwd` survives the restart. With no kernel session recorded, it starts one at the
+    repo root and says so.
     """
     from juplit.artifacts import run_cells
-    from juplit.view import parse_cell_range
 
-    report = run_cells(_source_file(notebook),
-                       cells=parse_cell_range(cells) if cells else None,
+    report = run_cells(_source_file(notebook), cells=_cell_range(cells),
                        stale_only=stale, all_cells=all, name=name, timeout=timeout)
+    if report["fell_back_to"]:
+        print(f"running from {report['fell_back_to']}")
     ran = ",".join(str(i) for i in report["executed"]) or "nothing"
     print(f"ran cells {ran}")
     if report["failed"]:
@@ -175,36 +178,69 @@ def check(strict: bool = False) -> None:
 
 
 @app.command
-def stamp(notebook: str, cells: str | None = None, force: bool = False) -> None:
+def stamp(notebook: str | None = None, cells: str | None = None, force: bool = False,
+          all: bool = False) -> None:
     """Vouch for outputs juplit did not produce, marking them current for their source.
 
     Use after running a notebook by hand in Jupyter. CELLS is a range like 3-7 or
-    1,4,9-11; omit it to stamp every unverified cell.
+    1,4,9-11; omit it to stamp every unverified cell. --all stamps every notebook the
+    config declares an artifact, and takes no NOTEBOOK and no CELLS.
     """
-    from juplit.artifacts import stamp as stamp_artifact
-    from juplit.view import parse_cell_range
+    from juplit.artifacts import artifact_py_files, stamp as stamp_artifact
 
-    indices = parse_cell_range(cells) if cells else None
-    stamped = stamp_artifact(Path(notebook), cells=indices, force=force)
+    if all:
+        if notebook is not None or cells is not None:
+            raise ValueError("stamp --all takes no notebook and no cells — it is the "
+                             "whole declared artifact set")
+        total = 0
+        py_files = artifact_py_files()
+        for py_file, label in zip(py_files, _labels(py_files)):
+            stamped = stamp_artifact(py_file, force=force)
+            total += len(stamped)
+            print(f"stamp {label}  {len(stamped)} cell(s)")
+        print(f"{len(py_files)} notebook(s), {total} cell(s) stamped.")
+        return
+
+    if notebook is None:
+        raise ValueError("stamp takes one notebook, or --all for every artifact notebook")
+    stamped = stamp_artifact(Path(notebook), cells=_cell_range(cells), force=force)
     print(f"stamped {len(stamped)} cell(s): {','.join(str(i) for i in stamped)}"
           if stamped else "stamp: nothing to do")
 
 
 @app.command
-def normalize(notebook: str) -> None:
+def normalize(notebook: str | None = None, all: bool = False) -> None:
     """Strip the running state from a committed notebook and report its size.
 
     Execution counts, per-run timings, widget state and carriage-return progress bars
     go; the outputs stay. Runs automatically on every artifact write — this command is
-    for a notebook edited by hand.
+    for a notebook edited by hand. --all walks every declared artifact notebook and
+    totals what they cost the repo.
     """
-    from juplit.artifacts import normalize_notebook
+    from juplit.artifacts import artifact_py_files, normalize_notebook
 
+    if all:
+        if notebook is not None:
+            raise ValueError("normalize --all takes no notebook — it is the whole "
+                             "declared artifact set")
+        py_files = artifact_py_files()
+        labels = _labels(py_files)
+        total = 0
+        for py_file, label in zip(py_files, labels):
+            report = normalize_notebook(py_file)
+            total += report["bytes"]
+            print(f"normalize {label}  {report['bytes']:>10,} bytes")
+            _report_oversized(report)
+        print(f"{len(py_files)} notebook(s), {total:,} bytes total.")
+        return
+
+    if notebook is None:
+        raise ValueError("normalize takes one notebook, or --all for every artifact "
+                         "notebook")
     report = normalize_notebook(Path(notebook))
     print(f"normalize: {'rewrote' if report['changed'] else 'already clean'} "
           f"({report['bytes']:,} bytes)")
-    for index, size in report["oversized"]:
-        print(f"normalize OVERSIZED: cell {index} output is {size:,} bytes")
+    _report_oversized(report)
 
 
 @app.command
@@ -227,6 +263,40 @@ def skill_migrate() -> None:
         juplit skill-migrate > .claude/skills/juplit-migrate.md
     """
     print(files("juplit").joinpath("SKILL_migrate_from_nbdev.md").read_text(), end="")
+
+
+def _cell_range(cells: str | None) -> list[int] | None:
+    """Parse a CELLS argument, catching the commonest way to get it wrong.
+
+    A second notebook path lands here — every per-notebook command takes exactly one —
+    and used to fail inside `int()`, naming the conversion rather than the mistake.
+    """
+    from juplit.view import parse_cell_range
+
+    if cells is None:
+        return None
+    if Path(cells).suffix in (".py", ".ipynb") or "/" in cells:
+        raise ValueError(
+            f"{cells!r} is a path, not a cell range — juplit commands take one notebook "
+            "at a time; `stamp` and `normalize` take --all for the whole artifact set"
+        )
+    return parse_cell_range(cells)
+
+
+def _labels(py_files: list[Path]) -> list[str]:
+    """Repo-root-relative paths, padded to a common width so a batch run lines up."""
+    from juplit.tasks import _repo_root
+
+    root = _repo_root()
+    names = [str(f.relative_to(root)) if f.is_relative_to(root) else str(f)
+             for f in py_files]
+    width = max((len(name) for name in names), default=0)
+    return [name.ljust(width) for name in names]
+
+
+def _report_oversized(report: dict) -> None:
+    for index, size in report["oversized"]:
+        print(f"normalize OVERSIZED: cell {index} output is {size:,} bytes")
 
 
 def _source_file(notebook: str) -> Path:
