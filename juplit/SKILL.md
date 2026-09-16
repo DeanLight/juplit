@@ -224,10 +224,20 @@ juplit kernel stop                                   # or `juplit clean`, which 
 ```
 
 `juplit run` requires one of `--stale`, `--all` or `--cells` — there is no default,
-because the plausible default re-runs everything.
+because the plausible default re-runs everything. `--all` restarts the kernel **in the
+directory it was started in**, so `juplit kernel start --cwd docs` survives the restart
+and a notebook's relative paths keep meaning the same thing. With no kernel session on
+disk it starts one at the repo root and prints `running from <dir>`.
 
 Other commands: `juplit stamp <nb>` (vouch for a human's outputs), `juplit normalize <nb>`
 (strip running state from a hand-edited notebook), `juplit html <nb>` (standalone HTML).
+`stamp` and `normalize` also take `--all`, which walks every notebook the config declares
+an artifact instead of one:
+
+```bash
+juplit normalize --all      # every artifact notebook, with a size total
+juplit stamp --all          # vouch for a whole batch executed outside juplit
+```
 
 ## Key conventions
 

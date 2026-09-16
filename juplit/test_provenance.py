@@ -351,3 +351,81 @@ def test_check_fails_a_notebook_that_would_not_render_on_github(tmp_path, monkey
     with pytest.raises(SystemExit):
         check_artifacts()
     assert "fails nbformat validation" in capsys.readouterr().out
+
+
+# ── the artifact set from the shell: stamp --all / normalize --all ───────────
+
+def _two_artifacts(tmp_path, monkeypatch) -> tuple[Path, Path]:
+    """Two declared artifacts, both carrying outputs juplit did not produce."""
+    from juplit.test_artifacts import _execute
+
+    _, exp = _make_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (exp / "e.py").write_text(FINDING_1)
+    (exp / "f.py").write_text(FINDING_1)
+    generate_notebooks()
+    _execute(exp / "e.ipynb")
+    _execute(exp / "f.ipynb")
+    return exp / "e.ipynb", exp / "f.ipynb"
+
+
+def test_stamp_all_reaches_every_declared_artifact(tmp_path, monkeypatch, capsys):
+    from juplit.cli import app
+
+    first, second = _two_artifacts(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:      # cyclopts exits on every command
+        app(["stamp", "--all"])
+
+    assert exit_info.value.code in (0, None)
+    out = capsys.readouterr().out
+    assert "experiments/e.py" in out and "experiments/f.py" in out
+    assert "2 notebook(s)" in out
+    assert scan(first)["unverified"] == [] and scan(second)["unverified"] == []
+
+
+def test_normalize_all_walks_the_artifact_set_and_totals_the_bytes(tmp_path, monkeypatch,
+                                                                   capsys):
+    from juplit.cli import app
+
+    first, second = _two_artifacts(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as exit_info:
+        app(["normalize", "--all"])
+
+    assert exit_info.value.code in (0, None)
+    out = capsys.readouterr().out
+    assert "normalize experiments/e.py" in out
+    assert "2 notebook(s)" in out and "bytes total" in out
+    for ipynb in (first, second):
+        assert nbformat.read(ipynb, as_version=4).cells[0].execution_count is None
+
+
+def test_a_second_path_is_reported_as_a_path_not_as_a_bad_integer(tmp_path, monkeypatch,
+                                                                  capsys):
+    """`stamp a.py b.py` parsed the second path as CELLS and failed inside `int()`."""
+    import juplit.cli as cli
+
+    _two_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.argv",
+                        ["juplit", "stamp", "experiments/e.py", "experiments/f.py"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    err = capsys.readouterr().err
+    assert "is a path, not a cell range" in err
+    assert "--all" in err
+    assert "invalid literal for int" not in err
+
+
+def test_stamp_without_a_notebook_or_all_says_which_to_pass(tmp_path, monkeypatch, capsys):
+    import juplit.cli as cli
+
+    _two_artifacts(tmp_path, monkeypatch)
+    monkeypatch.setattr("sys.argv", ["juplit", "stamp"])
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+    assert "--all" in capsys.readouterr().err

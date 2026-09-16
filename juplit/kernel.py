@@ -44,7 +44,13 @@ def session_path(name: str = DEFAULT_NAME) -> Path:
     return kernels_dir() / f"{name}.json"
 
 
-def _read_session(name: str) -> dict | None:
+def read_session(name: str) -> dict | None:
+    """The recorded session, or None if this kernel was never started here.
+
+    Public because `stop()` unlinks the file: anything that restarts a kernel and means
+    to put it back where it was — `run --all` is the only caller — has to read the
+    record first, and this is the only place the working directory survives.
+    """
     path = session_path(name)
     if not path.exists():
         return None
@@ -120,7 +126,7 @@ def _kernel_argv(kernel: str, conn_file: Path) -> list[str]:
 def start(name: str = DEFAULT_NAME, kernel: str = "python3", cwd: Path | None = None) -> dict:
     """Launch a kernel that outlives this process. Reuses a live one of the same name."""
     if alive(name):
-        return _read_session(name)
+        return read_session(name)
 
     kernels_dir().mkdir(parents=True, exist_ok=True)
     conn_file = kernels_dir() / f"{name}-connection.json"
@@ -159,7 +165,7 @@ def start(name: str = DEFAULT_NAME, kernel: str = "python3", cwd: Path | None = 
 
 def alive(name: str = DEFAULT_NAME) -> bool:
     """True if the recorded pid exists and the kernel answers within a short timeout."""
-    session = _read_session(name)
+    session = read_session(name)
     if session is None:
         return False
     try:
@@ -181,7 +187,7 @@ def status() -> list[dict]:
     for path in sorted(kernels_dir().glob("*.json")):
         if path.name.endswith("-connection.json"):
             continue
-        session = _read_session(path.stem)
+        session = read_session(path.stem)
         if session is not None:
             rows.append(session | {"alive": alive(session["name"])})
     return rows
@@ -193,7 +199,7 @@ def stop(name: str = DEFAULT_NAME) -> bool:
     We did not spawn it in this process, so there is no KernelManager to ask: the pid in
     the session file and the control channel are all we have.
     """
-    session = _read_session(name)
+    session = read_session(name)
     if session is None:
         return False
     try:
@@ -226,7 +232,7 @@ def execute(code: str, name: str = DEFAULT_NAME,
     A failed attempt therefore exists only in the kernel's history and in this return
     value — never in the notebook.
     """
-    session = _read_session(name)
+    session = read_session(name)
     if session is None:
         raise RuntimeError(f"no kernel {name!r} — run `juplit kernel start`")
     try:
