@@ -136,6 +136,12 @@ python_files = ["*.py"]
 
 No `def test_*` functions required — just `if test():` blocks next to the code they test.
 
+Under pytest, `test()` is `True` only for modules inside the run's own
+`[tool.juplit] notebook_src_dirs` (read from the pyproject at pytest's rootdir, by a
+pytest plugin juplit installs). A package you install that is itself written with
+`if test():` blocks therefore does not run them in your test suite. *(Since 0.3.0:
+earlier versions ran every imported module's blocks under any pytest run.)*
+
 You can also mix standard pytest functions with `if test():` scaffolding blocks.  Because `if test():` runs at module scope during pytest collection, variables it sets up are available to `def test_*` functions:
 
 ```python

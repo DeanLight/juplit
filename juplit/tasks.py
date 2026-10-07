@@ -21,9 +21,11 @@ def _find_pyproject_toml() -> Path | None:
     return None
 
 
-def _get_src_dirs() -> list[Path]:
-    """Read notebook_src_dirs (or legacy notebook_src_dir) from [tool.juplit]."""
-    toml_path = _find_pyproject_toml()
+def _get_src_dirs(toml_path: Path | None = None) -> list[Path]:
+    """Read notebook_src_dirs (or legacy notebook_src_dir) from [tool.juplit] of
+    `toml_path`, by default the pyproject.toml nearest the cwd."""
+    if toml_path is None:
+        toml_path = _find_pyproject_toml()
     root = toml_path.parent if toml_path is not None else Path.cwd()
     if toml_path is not None:
         try:
