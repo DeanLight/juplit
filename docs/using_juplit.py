@@ -99,9 +99,12 @@
 #
 # `test()` returns `True` when:
 # - Running as `__main__` (interactive Jupyter cell execution)
-# - `pytest` is active
+# - `pytest` is running, and the module lives in one of that run's
+#   `notebook_src_dirs` (read from the pyproject at pytest's rootdir)
 #
-# It returns `False` on normal import — so test assertions never run in production.
+# It returns `False` on normal import — so test assertions never run in production —
+# and under another project's pytest run, so an installed package written with
+# `if test():` blocks does not run them.
 #
 # ### Using `def test_*` functions with `test()` scaffolding
 #

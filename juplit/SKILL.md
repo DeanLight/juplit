@@ -68,9 +68,9 @@ if test():
 
 `test()` returns `True` when:
 - The module is run as `__main__` (interactive Jupyter cell execution)
-- `pytest` is active
+- `pytest` is running, and the module lives in one of that run's `notebook_src_dirs` (read from the pyproject at pytest's rootdir)
 
-It returns `False` on normal import, so test code never runs in production.
+It returns `False` on normal import, so test code never runs in production — and under someone else's pytest run, an installed package written with `if test():` blocks does not run them.
 
 ## Poe commands
 

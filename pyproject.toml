@@ -1,6 +1,6 @@
 [project]
 name = "juplit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Jupytext percent-format notebook workflow manager"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,9 @@ Repository = "https://github.com/DeanLight/juplit"
 
 [project.scripts]
 juplit = "juplit.cli:main"
+
+[project.entry-points.pytest11]
+juplit = "juplit.pytest_plugin"
 
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
