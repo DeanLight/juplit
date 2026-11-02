@@ -87,10 +87,7 @@ def test_sync_reports_unchanged(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
 
     sync_notebooks()
-    out = capsys.readouterr().out
-    assert "sync unchanged: src/nb.py" in out
-    assert "synced py → ipynb" not in out
-    assert "synced ipynb → py" not in out
+    assert capsys.readouterr().out == "Sync: nothing changed\n"
 
 
 def test_sync_flags_conflict_when_both_sides_change(tmp_path, monkeypatch, capsys):
@@ -144,7 +141,7 @@ def test_same_basename_notebooks_do_not_collide(tmp_path, monkeypatch, capsys):
     """Regression: two paired notebooks sharing a basename across dirs must not
     collide in the sync state (basename keying flagged one as a false conflict
     and never stabilized). Keys are repo-root-relative paths, so a no-edit
-    second sync reports both as unchanged and touches neither file."""
+    second sync reports nothing changed and touches neither file."""
     (tmp_path / "pyproject.toml").write_text(
         '[tool.juplit]\nnotebook_src_dirs = "pkg"\n\n'
         '[tool.jupytext]\nformats = "ipynb,py:percent"\n'
@@ -167,12 +164,126 @@ def test_same_basename_notebooks_do_not_collide(tmp_path, monkeypatch, capsys):
     sync_notebooks()  # no edits since baseline
     out = capsys.readouterr().out
 
-    assert "sync CONFLICT" not in out
-    assert "synced py → ipynb" not in out
-    assert "synced ipynb → py" not in out
-    assert "pkg/a/x.py" in out and "pkg/b/x.py" in out  # both distinguishable
+    assert out == "Sync: nothing changed\n"
     assert a_py.read_text() == a_before
     assert b_py.read_text() == b_before
+
+
+def test_sync_names_only_the_files_that_changed(tmp_path, monkeypatch, capsys):
+    """With many paired files and one edit, the summary names the edited file
+    and no other: unchanged files are not listed."""
+    (tmp_path / "pyproject.toml").write_text(PYPROJECT)
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("a", "b", "c"):
+        (src / f"{name}.py").write_text(PAIRED_HEADER.replace('"seed"', f'"{name}"'))
+    monkeypatch.chdir(tmp_path)
+    generate_notebooks()
+    sync_notebooks()
+    capsys.readouterr()
+
+    b = src / "b.py"
+    b.write_text(b.read_text() + "\n# %%\nedited = 1\n")
+    _bump_mtime(b, src / "b.ipynb")
+
+    sync_notebooks()
+    assert capsys.readouterr().out == "1 synced py → ipynb: src/b.py\n"
+
+
+# ── jupytext_version header churn ─────────────────────────────────────────────
+
+OLD_VERSION_HEADER = """\
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.13.0
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %%
+val = "seed"
+"""
+
+
+def _make_old_version_project(root: Path) -> Path:
+    (root / "pyproject.toml").write_text(PYPROJECT)
+    src = root / "src"
+    src.mkdir()
+    (src / "nb.py").write_bytes(OLD_VERSION_HEADER.encode())
+    return src
+
+
+def test_first_sync_keeps_py_written_by_older_jupytext(tmp_path, monkeypatch, capsys):
+    """A fresh clone: no .ipynb yet, and the .py header names an older jupytext.
+    Sync creates the .ipynb but leaves the .py byte-for-byte, so it is reported
+    as py → ipynb only."""
+    src = _make_old_version_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    sync_notebooks()
+    assert capsys.readouterr().out == "1 synced py → ipynb: src/nb.py\n"
+    assert (src / "nb.py").read_bytes() == OLD_VERSION_HEADER.encode()
+    assert (src / "nb.ipynb").exists()
+
+
+def test_version_only_rewrite_counts_as_unchanged(tmp_path, monkeypatch, capsys):
+    """The dr-evo loop: `git checkout` restores the old-version .py (now newest by
+    mtime), and sync must neither rewrite it nor report it."""
+    src = _make_old_version_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sync_notebooks()
+    capsys.readouterr()
+
+    py = src / "nb.py"
+    py.write_bytes(OLD_VERSION_HEADER.encode())
+    _bump_mtime(py, src / "nb.ipynb")
+
+    for _ in range(2):
+        sync_notebooks()
+        assert capsys.readouterr().out == "Sync: nothing changed\n"
+        assert py.read_bytes() == OLD_VERSION_HEADER.encode()
+
+
+def test_real_edit_under_old_version_header_still_syncs(tmp_path, monkeypatch, capsys):
+    """Restoring is only for a version-only diff: a real ipynb edit still reaches
+    the .py (whose header jupytext then stamps with its own version)."""
+    import nbformat
+
+    src = _make_old_version_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sync_notebooks()
+    capsys.readouterr()
+
+    py, ipynb = src / "nb.py", src / "nb.ipynb"
+    nb = nbformat.read(ipynb, as_version=4)
+    nb.cells.append(nbformat.v4.new_code_cell("from_nb = 3"))
+    nbformat.write(nb, ipynb)
+    _bump_mtime(ipynb, py)
+
+    sync_notebooks()
+    assert capsys.readouterr().out == "1 synced ipynb → py: src/nb.py\n"
+    assert "from_nb = 3" in py.read_text()
+
+
+@pytest.mark.parametrize("old, new, only_version", [
+    ("#       jupytext_version: 1.13.0\nx = 1\n", "#       jupytext_version: 1.19.1\nx = 1\n", True),
+    ('   "jupytext_version": "1.13.0"\n', '   "jupytext_version": "1.19.1"\n', True),
+    ("#       jupytext_version: 1.13.0\nx = 1\n", "#       jupytext_version: 1.19.1\nx = 2\n", False),
+    ("x = 1\n", "x = 1\n\n", False),
+    ("#       jupytext_version: 1.13.0\n", "", False),
+])
+def test_differs_only_in_jupytext_version(old, new, only_version):
+    from juplit.tasks import _differs_only_in_jupytext_version
+
+    assert _differs_only_in_jupytext_version(old.encode(), new.encode()) is only_version
 
 
 # ── Overwrite guard (edited .py vs newer stale .ipynb) ────────────────────────

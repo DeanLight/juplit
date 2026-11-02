@@ -6,6 +6,8 @@ They can also be imported and called directly from Python.
 
 import hashlib
 import json
+import os
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -188,6 +190,45 @@ def _warn_gitignored_artifacts(py_files: list[Path]) -> None:
         ))
 
 
+# ── jupytext_version churn ────────────────────────────────────────────────────
+
+# jupytext stamps the installed version into the `.py` header on every write, so a
+# file last written by another jupytext is rewritten with only that line changed.
+_JUPYTEXT_VERSION_LINE = re.compile(rb'^\W*jupytext_version\W*:')
+
+
+def _differs_only_in_jupytext_version(old: bytes, new: bytes) -> bool:
+    """True if `old` and `new` are the same lines except for `jupytext_version` ones."""
+    old_lines, new_lines = old.splitlines(keepends=True), new.splitlines(keepends=True)
+    return len(old_lines) == len(new_lines) and all(
+        a == b or (_JUPYTEXT_VERSION_LINE.match(a) and _JUPYTEXT_VERSION_LINE.match(b))
+        for a, b in zip(old_lines, new_lines)
+    )
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _undo_version_only_rewrite(path: Path, original: bytes | None) -> None:
+    """Put back `original` if jupytext's rewrite of `path` only bumped `jupytext_version`.
+
+    Keeps the mtime jupytext gave the file, so the pair's newer-side ordering is
+    exactly what jupytext left.
+    """
+    current = _read_bytes(path)
+    if original is None or current is None or current == original:
+        return
+    if not _differs_only_in_jupytext_version(original, current):
+        return
+    stat = path.stat()
+    path.write_bytes(original)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+
 # ── Jupytext runner ───────────────────────────────────────────────────────────
 
 def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[str]], list[str]]:
@@ -200,6 +241,10 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     * the `.py` content changed  → the `.ipynb` was newer, so `ipynb → py`
     * only the `.ipynb` changed   → the `.py` was newer, so `py → ipynb`
     * neither changed             → already in sync
+
+    A rewrite whose only difference is the `jupytext_version` header line (the
+    file was last written by another jupytext) is undone, so it counts as no
+    change rather than as a sync.
 
     A file is also flagged as a *conflict* when, comparing the pre-sync state
     against the hashes recorded at the previous sync (`.sync_hashes.json`),
@@ -236,6 +281,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
         f: (_hash_file(f), _hash_file(_paired_ipynb(f)))
         for f in files
     }
+    originals = {f: (_read_bytes(f), _read_bytes(_paired_ipynb(f))) for f in files}
 
     result = subprocess.run(
         ["jupytext"] + args + [str(f) for f in files],
@@ -266,6 +312,10 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
 
     if result.returncode != 0 and not errors:
         errors.append(result.stderr.strip() or f"jupytext exited with code {result.returncode}")
+
+    for f, (py_original, ipynb_original) in originals.items():
+        _undo_version_only_rewrite(f, py_original)
+        _undo_version_only_rewrite(_paired_ipynb(f), ipynb_original)
 
     to_ipynb: list[str] = []
     to_py: list[str] = []
@@ -391,10 +441,14 @@ def sync_notebooks() -> None:
     `pyproject.toml`) and calls `jupytext --sync` on every `.py` file that has
     a jupytext percent-format header pairing it with an `.ipynb`.
 
-    Prints a summary that splits synced files by direction (`py → ipynb` vs
-    `ipynb → py`), alongside unchanged and skipped files. Also flags any
-    *conflict* — a file whose `.py` and `.ipynb` both changed since the last
-    sync, where jupytext keeps the newer by mtime and overwrites the other.
+    Prints only what changed: the synced files split by direction (`py → ipynb`
+    vs `ipynb → py`), conflicts, overwrite-blocked files, errors and stale
+    artifacts. Unchanged and unpaired files are not listed; when nothing
+    changed it prints `Sync: nothing changed`. A file whose rewrite would only
+    bump the `jupytext_version` header line is left byte-for-byte and counts
+    as unchanged. Also flags any *conflict* — a file whose `.py` and `.ipynb`
+    both changed since the last sync, where jupytext keeps the newer by mtime
+    and overwrites the other.
 
     Protects a `.py` that has edits since the last sync from being silently
     overwritten by a newer (mtime) `.ipynb`: such files are run with jupytext's
@@ -436,10 +490,6 @@ def sync_notebooks() -> None:
         print(_fmt("synced py → ipynb", groups["to_ipynb"]))
     if groups["to_py"]:
         print(_fmt("synced ipynb → py", groups["to_py"]))
-    if groups["unchanged"]:
-        print(_fmt("sync unchanged", groups["unchanged"]))
-    if groups["skipped"]:
-        print(_fmt("sync skipped (not paired)", groups["skipped"]))
     if groups["conflicts"]:
         print(_fmt(
             "sync CONFLICT — both .py and .ipynb changed since last sync; "
@@ -453,8 +503,9 @@ def sync_notebooks() -> None:
             ".ipynb or touch the .py, then re-sync)",
             groups["overwrite_risk"],
         ))
-    if not any(groups.values()):
-        print("Sync: nothing to do")
+    changed = ("to_ipynb", "to_py", "conflicts", "overwrite_risk")
+    if not errors and not any(groups[k] for k in changed):
+        print("Sync: nothing changed")
     for err in errors:
         print(f"sync error: {err}")
     stale = _report_stale_artifacts(files)

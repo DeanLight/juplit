@@ -159,7 +159,9 @@
 #
 # 1. Open the `.py` file in your editor (or open the paired `.ipynb` in Jupyter)
 # 2. Make your changes
-# 3. Run `poe sync` to keep `.py` and `.ipynb` in step
+# 3. Run `poe sync` to keep `.py` and `.ipynb` in step. It names only the files it
+#    synced, by direction, and prints `Sync: nothing changed` otherwise; a `.py` whose
+#    header was written by another jupytext version is not rewritten for that alone
 # 4. Commit the `.py` file — `.ipynb` is gitignored
 #
 # ### Before handing off to an AI agent

@@ -96,7 +96,10 @@ poe sync       # generate .ipynb notebooks from .py files
 ### Editing code (as an AI agent or in an editor)
 
 1. Edit the `.py` file directly
-2. Run `poe sync` to propagate changes to `.ipynb`
+2. Run `poe sync` to propagate changes to `.ipynb`. It names only the files it synced
+   (`synced py → ipynb: …`, `synced ipynb → py: …`), plus any conflict, block or error;
+   otherwise it prints `Sync: nothing changed`. A `.py` whose header names another
+   jupytext version is not rewritten for that alone, so that alone never dirties `git status`
 3. Commit the `.py` file — `.ipynb` is gitignored
 
 ### Before handing off to an AI agent
