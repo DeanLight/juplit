@@ -6,7 +6,6 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -160,8 +159,7 @@
 # 1. Open the `.py` file in your editor (or open the paired `.ipynb` in Jupyter)
 # 2. Make your changes
 # 3. Run `poe sync` to keep `.py` and `.ipynb` in step. It names only the files it
-#    synced, by direction, and prints `Sync: nothing changed` otherwise; a `.py` whose
-#    header was written by another jupytext version is not rewritten for that alone
+#    synced, by direction, and prints `Sync: nothing changed` otherwise
 # 4. Commit the `.py` file — `.ipynb` is gitignored
 #
 # ### Before handing off to an AI agent
@@ -182,12 +180,19 @@
 #
 # [tool.jupytext]
 # formats = "ipynb,py:percent"
+# notebook_metadata_filter = "-jupytext.text_representation.jupytext_version,-jupytext.notebook_metadata_filter"
 #
 # [tool.pytest.ini_options]
 # python_files = ["*.py"]
 # python_classes = ["Test*"]
 # python_functions = ["test_*"]
 # ```
+#
+# `notebook_metadata_filter` keeps the jupytext version out of every header: it lives in
+# your lock file instead, so upgrading jupytext changes no notebook. juplit strips the
+# line from each `.py` it syncs either way; the filter makes Jupyter and plain `jupytext`
+# agree. Headers that still carry it lose it on the next `poe sync`, reported once as
+# `removed jupytext_version from N notebooks (one-time migration)`.
 
 # %% [markdown]
 # ## Using the skill with Claude Code

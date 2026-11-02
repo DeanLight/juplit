@@ -100,12 +100,22 @@ notebook_src_dir = "your_module"   # directory juplit scans for paired .py files
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
+# Keep jupytext's version out of every header, so upgrading jupytext changes no notebook.
+notebook_metadata_filter = "-jupytext.text_representation.jupytext_version,-jupytext.notebook_metadata_filter"
 
 [tool.pytest.ini_options]
 python_files = ["*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 ```
+
+`notebook_metadata_filter` is what lets the jupytext version live in your lock file
+instead of in every notebook. jupytext would otherwise stamp its installed version into
+each header it writes, and a version bump would rewrite every `.py`. juplit strips that
+line after each jupytext call whether or not the filter is set; the filter makes Jupyter
+and plain `jupytext` do the same. A repo whose headers still carry the line loses it on
+the next `juplit sync`, reported once as `removed jupytext_version from N notebooks
+(one-time migration)`.
 
 juplit finds the nearest `pyproject.toml` by walking up from the current directory, so the CLI works from any subdirectory.
 

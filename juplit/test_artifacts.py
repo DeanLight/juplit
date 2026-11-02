@@ -154,6 +154,17 @@ def test_write_artifact_normalizes_on_the_way_out(tmp_path):
 
 # ── nb / sync / clean ────────────────────────────────────────────────────────
 
+def test_declaring_the_filter_writes_no_jupytext_version(tmp_path, monkeypatch):
+    """juplit rewrites an artifact's .py header to add `-juplit`; that write,
+    like every jupytext write juplit makes, leaves the version out."""
+    _, exp = _make_project(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    generate_notebooks()
+
+    header = (exp / "e.py").read_text()
+    assert "cell_metadata_filter: -juplit" in header
+    assert "jupytext_version" not in header
+
 def test_nb_keeps_artifact_outputs_and_wipes_ordinary_ones(tmp_path, monkeypatch, capsys):
     src, exp = _make_project(tmp_path)
     monkeypatch.chdir(tmp_path)

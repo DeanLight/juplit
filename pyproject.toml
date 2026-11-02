@@ -76,6 +76,8 @@ artifact_notebooks = ["docs/artifact_notebooks.py"]
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
+# No jupytext_version in headers, so upgrading jupytext changes no notebook.
+notebook_metadata_filter = "-jupytext.text_representation.jupytext_version,-jupytext.notebook_metadata_filter"
 
 [tool.pytest.ini_options]
 testpaths = ["juplit"]

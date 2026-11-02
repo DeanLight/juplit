@@ -190,20 +190,78 @@ def _warn_gitignored_artifacts(py_files: list[Path]) -> None:
         ))
 
 
-# ── jupytext_version churn ────────────────────────────────────────────────────
+# ── No jupytext_version in headers ────────────────────────────────────────────
 
-# jupytext stamps the installed version into the `.py` header on every write, so a
-# file last written by another jupytext is rewritten with only that line changed.
-_JUPYTEXT_VERSION_LINE = re.compile(rb'^\W*jupytext_version\W*:')
+# jupytext stamps its installed version into every `.py` header it writes, so upgrading
+# it would rewrite every notebook. juplit strips that line after each jupytext write;
+# this filter in `[tool.jupytext]` makes Jupyter and plain jupytext leave it out too.
+# The second entry keeps the filter itself out of every header.
+VERSION_FILTER = (
+    "-jupytext.text_representation.jupytext_version",
+    "-jupytext.notebook_metadata_filter",
+)
+_HEADER = re.compile(r"\A((?:#!.*\n|# -\*-.*\n)*)(# ---\r?\n.*?\n# ---\r?\n)", re.S)
+_VERSION_LINE = re.compile(r"^#\s+jupytext_version:.*\n", re.M)
 
 
-def _differs_only_in_jupytext_version(old: bytes, new: bytes) -> bool:
-    """True if `old` and `new` are the same lines except for `jupytext_version` ones."""
-    old_lines, new_lines = old.splitlines(keepends=True), new.splitlines(keepends=True)
-    return len(old_lines) == len(new_lines) and all(
-        a == b or (_JUPYTEXT_VERSION_LINE.match(a) and _JUPYTEXT_VERSION_LINE.match(b))
-        for a, b in zip(old_lines, new_lines)
-    )
+def strip_jupytext_version(text: str) -> str:
+    """`text` without the `jupytext_version` line of its jupytext header, if any."""
+    header = _HEADER.match(text)
+    if header is None:
+        return text
+    return header.group(1) + _VERSION_LINE.sub("", header.group(2)) + text[header.end():]
+
+
+def _strip_version_in_place(py_file: Path) -> None:
+    """Strip the header's version line, keeping the mtime jupytext gave the file."""
+    try:
+        text = py_file.read_bytes().decode()
+    except (OSError, UnicodeDecodeError):
+        return
+    stripped = strip_jupytext_version(text)
+    if stripped == text:
+        return
+    stat = py_file.stat()
+    py_file.write_bytes(stripped.encode())
+    os.utime(py_file, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+
+def _migrated_py(before: bytes | None, after: bytes | None) -> bool:
+    """True if the `.py` changed only by losing its `jupytext_version` line."""
+    return (None not in (before, after) and before != after
+            and after == strip_jupytext_version(before.decode(errors="replace")).encode())
+
+
+def _config_has_version_filter() -> bool:
+    """True if the project's jupytext config carries every `VERSION_FILTER` entry."""
+    from jupytext.config import load_jupytext_config
+
+    config = load_jupytext_config(str(_repo_root()))
+    entries = (config.notebook_metadata_filter if config else "").split(",")
+    return set(VERSION_FILTER) <= set(entries)
+
+
+def _gained_only_the_filter(before: bytes | None, after: bytes | None) -> bool:
+    """True if the `.ipynb` changed only by recording `notebook_metadata_filter`.
+
+    With the filter in `[tool.jupytext]`, jupytext records it in the notebook the
+    next time it reads the `.py`: the migration finishing, not an edit.
+    """
+    if None in (before, after) or before == after:
+        return False
+    try:
+        old, new = json.loads(before), json.loads(after)
+    except ValueError:
+        return False
+    new.get("metadata", {}).get("jupytext", {}).pop("notebook_metadata_filter", None)
+    return old == new
+
+
+def _lacks_the_filter(ipynb: Path) -> bool:
+    try:
+        return "notebook_metadata_filter" not in json.loads(ipynb.read_text())["metadata"]["jupytext"]
+    except (OSError, ValueError, KeyError):
+        return False
 
 
 def _read_bytes(path: Path) -> bytes | None:
@@ -211,22 +269,6 @@ def _read_bytes(path: Path) -> bytes | None:
         return path.read_bytes()
     except OSError:
         return None
-
-
-def _undo_version_only_rewrite(path: Path, original: bytes | None) -> None:
-    """Put back `original` if jupytext's rewrite of `path` only bumped `jupytext_version`.
-
-    Keeps the mtime jupytext gave the file, so the pair's newer-side ordering is
-    exactly what jupytext left.
-    """
-    current = _read_bytes(path)
-    if original is None or current is None or current == original:
-        return
-    if not _differs_only_in_jupytext_version(original, current):
-        return
-    stat = path.stat()
-    path.write_bytes(original)
-    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
 
 # ── Jupytext runner ───────────────────────────────────────────────────────────
@@ -242,9 +284,13 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     * only the `.ipynb` changed   → the `.py` was newer, so `py → ipynb`
     * neither changed             → already in sync
 
-    A rewrite whose only difference is the `jupytext_version` header line (the
-    file was last written by another jupytext) is undone, so it counts as no
-    change rather than as a sync.
+    After the run, every `.py` header loses its `jupytext_version` line
+    (`strip_jupytext_version`), so a jupytext upgrade changes no file. A pair
+    whose only change is the `.py` losing that line, or the `.ipynb` recording
+    the project's filter, is a one-time *migration*, not a sync in either
+    direction. A sync that migrated a `.py` from the `.ipynb` side syncs that
+    pair once more from the `.py`, so the `.ipynb` records the filter in the
+    same run rather than reporting it on the next.
 
     A file is also flagged as a *conflict* when, comparing the pre-sync state
     against the hashes recorded at the previous sync (`.sync_hashes.json`),
@@ -267,11 +313,12 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     overwrite-blocked files keep their prior baseline).
 
     Returns (groups, errors) where groups has keys: to_ipynb, to_py,
-    unchanged, skipped, conflicts, overwrite_risk. A conflict path also appears
+    unchanged, skipped, conflicts, overwrite_risk, migrated. A conflict path also appears
     in whichever direction jupytext ended up applying.
     """
     empty = {k: [] for k in
-             ("to_ipynb", "to_py", "unchanged", "skipped", "conflicts", "overwrite_risk")}
+             ("to_ipynb", "to_py", "unchanged", "skipped", "conflicts", "overwrite_risk",
+              "migrated")}
     if not files:
         return empty, []
 
@@ -284,7 +331,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     originals = {f: (_read_bytes(f), _read_bytes(_paired_ipynb(f))) for f in files}
 
     result = subprocess.run(
-        ["jupytext"] + args + [str(f) for f in files],
+        ["jupytext", *args, *(str(f) for f in files)],
         capture_output=True,
         text=True,
     )
@@ -313,9 +360,17 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     if result.returncode != 0 and not errors:
         errors.append(result.stderr.strip() or f"jupytext exited with code {result.returncode}")
 
-    for f, (py_original, ipynb_original) in originals.items():
-        _undo_version_only_rewrite(f, py_original)
-        _undo_version_only_rewrite(_paired_ipynb(f), ipynb_original)
+    for f in files:
+        if f.resolve() not in risk_paths | skipped_paths:
+            _strip_version_in_place(f)
+
+    lagging = [f for f in files if _migrated_py(originals[f][0], _read_bytes(f))
+               and _lacks_the_filter(_paired_ipynb(f))]
+    if "--sync" in args and lagging and _config_has_version_filter():
+        again = subprocess.run(["jupytext", "--sync", *map(str, lagging)],
+                               capture_output=True, text=True)
+        if again.returncode != 0:
+            errors.append(again.stderr.strip())
 
     to_ipynb: list[str] = []
     to_py: list[str] = []
@@ -323,6 +378,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
     skipped: list[str] = []
     conflicts: list[str] = []
     overwrite_risk: list[str] = []
+    migrated: list[str] = []
 
     for f in files:
         key = _key(f, root)
@@ -343,8 +399,14 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
         ):
             conflicts.append(key)
 
-        py_changed = _hash_file(f) != py_before
-        ipynb_changed = _hash_file(_paired_ipynb(f)) != ipynb_before
+        (py_original, ipynb_original), py_after, ipynb_after = (
+            originals[f], _read_bytes(f), _read_bytes(_paired_ipynb(f)))
+        py_migrated = _migrated_py(py_original, py_after)
+        ipynb_migrated = _gained_only_the_filter(ipynb_original, ipynb_after)
+        if py_migrated or ipynb_migrated:
+            migrated.append(key)
+        py_changed = py_after != py_original and not py_migrated
+        ipynb_changed = ipynb_after != ipynb_original and not ipynb_migrated
         if py_changed:
             to_py.append(key)
         elif ipynb_changed:
@@ -359,6 +421,7 @@ def _run_jupytext(args: list[str], files: list[Path]) -> tuple[dict[str, list[st
         "skipped": skipped,
         "conflicts": conflicts,
         "overwrite_risk": overwrite_risk,
+        "migrated": migrated,
     }, errors
 
 
@@ -432,6 +495,15 @@ def _report_stale_artifacts(py_files: list[Path]) -> bool:
     return stale_found
 
 
+def _report_migration(count: int) -> None:
+    """Say how many headers lost `jupytext_version`, and how to keep editors in step."""
+    print(f"removed jupytext_version from {count} notebook{'s' if count > 1 else ''} "
+          "(one-time migration)")
+    if not _config_has_version_filter():
+        print(f'add notebook_metadata_filter = "{",".join(VERSION_FILTER)}" to [tool.jupytext] '
+              "so Jupyter and plain jupytext leave it out too")
+
+
 # ── Public tasks ─────────────────────────────────────────────────────────────
 
 def sync_notebooks() -> None:
@@ -444,11 +516,12 @@ def sync_notebooks() -> None:
     Prints only what changed: the synced files split by direction (`py → ipynb`
     vs `ipynb → py`), conflicts, overwrite-blocked files, errors and stale
     artifacts. Unchanged and unpaired files are not listed; when nothing
-    changed it prints `Sync: nothing changed`. A file whose rewrite would only
-    bump the `jupytext_version` header line is left byte-for-byte and counts
-    as unchanged. Also flags any *conflict* — a file whose `.py` and `.ipynb`
-    both changed since the last sync, where jupytext keeps the newer by mtime
-    and overwrites the other.
+    changed it prints `Sync: nothing changed`. Headers are kept without
+    `jupytext_version` (see `strip_jupytext_version`), so upgrading jupytext
+    changes no file; a header that still has the line loses it once, counted
+    as `removed jupytext_version from N notebooks`. Also flags any *conflict*
+    — a file whose `.py` and `.ipynb` both changed since the last sync, where
+    jupytext keeps the newer by mtime and overwrites the other.
 
     Protects a `.py` that has edits since the last sync from being silently
     overwritten by a newer (mtime) `.ipynb`: such files are run with jupytext's
@@ -503,7 +576,9 @@ def sync_notebooks() -> None:
             ".ipynb or touch the .py, then re-sync)",
             groups["overwrite_risk"],
         ))
-    changed = ("to_ipynb", "to_py", "conflicts", "overwrite_risk")
+    if groups["migrated"]:
+        _report_migration(len(groups["migrated"]))
+    changed = ("to_ipynb", "to_py", "conflicts", "overwrite_risk", "migrated")
     if not errors and not any(groups[k] for k in changed):
         print("Sync: nothing changed")
     for err in errors:
@@ -547,6 +622,8 @@ def generate_notebooks() -> None:
     _warn_gitignored_artifacts(files)
     if groups["to_ipynb"]:
         print(_fmt("nb created/updated", groups["to_ipynb"]))
+    if groups["migrated"]:
+        _report_migration(len(groups["migrated"]))
     if groups["unchanged"]:
         print(_fmt("nb unchanged", groups["unchanged"]))
     if groups["skipped"]:

@@ -29,6 +29,7 @@ from juplit.tasks import (
     _is_paired_notebook,
     _paired_ipynb,
     _repo_root,
+    strip_jupytext_version,
 )
 
 STAMP_KEY = "juplit"
@@ -164,7 +165,7 @@ def ensure_filter_py(py_file: Path) -> bool:
     nb = jupytext.reads(py_file.read_text(), fmt="py:percent")
     if not ensure_filter(nb):
         return False
-    py_file.write_text(jupytext.writes(nb, fmt="py:percent"))
+    py_file.write_text(strip_jupytext_version(jupytext.writes(nb, fmt="py:percent")))
     return True
 
 
@@ -494,7 +495,7 @@ def add_cell(py_file: Path, source: str, outputs: list[NotebookNode],
     nb.cells.insert(index, executed)
 
     ensure_filter(py_nb)
-    py_file.write_text(jupytext.writes(py_nb, fmt="py:percent"))
+    py_file.write_text(strip_jupytext_version(jupytext.writes(py_nb, fmt="py:percent")))
     write_artifact(ipynb, nb)
 
     check = _source_drift(
