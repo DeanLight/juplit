@@ -107,6 +107,13 @@ def test_add_cell_leaves_sync_with_nothing_to_report(artifact, capsys):
     assert "CONFLICT" not in capsys.readouterr().out
 
 
+def test_add_cell_writes_no_jupytext_version(artifact):
+    py, _ = artifact
+    add_cell(py, "later = 1", [])
+    assert "later = 1" in py.read_text()
+    assert "jupytext_version" not in py.read_text()
+
+
 def test_add_cell_refuses_a_pair_that_is_not_declared(artifact):
     py, _ = artifact
     ordinary = py.parent.parent / "src" / "nb.py"

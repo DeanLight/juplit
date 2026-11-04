@@ -23,13 +23,15 @@ Every paired notebook `.py` file starts with a jupytext header:
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
 #     name: python3
 # ---
 ```
+
+The header carries no `jupytext_version`: the version lives in the lock file, so a
+jupytext upgrade changes no notebook. Do not add it back.
 
 The key line is `formats: ipynb,py:percent` — this is what marks a file as a paired notebook.
 
@@ -96,7 +98,11 @@ poe sync       # generate .ipynb notebooks from .py files
 ### Editing code (as an AI agent or in an editor)
 
 1. Edit the `.py` file directly
-2. Run `poe sync` to propagate changes to `.ipynb`
+2. Run `poe sync` to propagate changes to `.ipynb`. It names only the files it synced
+   (`synced py → ipynb: …`, `synced ipynb → py: …`), plus any conflict, block or error;
+   otherwise it prints `Sync: nothing changed`. A header that still has a
+   `jupytext_version` line loses it once, reported as `removed jupytext_version from N
+   notebooks (one-time migration)`: commit that change with the rest
 3. Commit the `.py` file — `.ipynb` is gitignored
 
 ### Before handing off to an AI agent
@@ -122,7 +128,6 @@ Minimal template:
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.16.0
 # ---
 
 # %% [markdown]
@@ -164,6 +169,7 @@ notebook_src_dirs = ["your_module_name", "docs"]  # dirs scanned for paired .py 
 
 [tool.jupytext]
 formats = "ipynb,py:percent"
+notebook_metadata_filter = "-jupytext.text_representation.jupytext_version,-jupytext.notebook_metadata_filter"  # no jupytext version in headers
 
 [tool.pytest.ini_options]
 python_files = ["*.py"]
